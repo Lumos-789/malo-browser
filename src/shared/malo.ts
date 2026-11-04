@@ -64,6 +64,41 @@ export type MaloNetworkInfo = {
   console_errors: Array<{ message: string; source: string; line: number }>;
 };
 
+/**
+ * Why a response record has no body. `too_large` is reserved by the contract:
+ * bodies over the cap are truncated instead, so the daemon never emits it.
+ * `getResponseBody_failed` carries the CDP reason after the colon.
+ */
+export type MaloResponseBodyError =
+  | "not_subscribed"
+  | "no_body"
+  | "too_large"
+  | "evicted"
+  | "pending"
+  | "binary"
+  | `getResponseBody_failed: ${string}`;
+
+export type MaloResponseRecord = {
+  seq: number;
+  url: string;
+  status: number;
+  mime_type: string;
+  resource_type: string;
+  body: string | null;
+  body_truncated: boolean;
+  body_error: MaloResponseBodyError | null;
+};
+
+export type MaloNetworkCaptureState = {
+  url_prefixes: string[];
+  captured: number;
+};
+
+export type MaloResponsesResult = {
+  responses: MaloResponseRecord[];
+  has_more: boolean;
+};
+
 export type MaloLightObservation = {
   url: string;
   title: string;

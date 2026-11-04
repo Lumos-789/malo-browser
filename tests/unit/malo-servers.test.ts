@@ -242,6 +242,8 @@ type FakeSession = {
   assertExpectations: ReturnType<typeof vi.fn>;
   watch: ReturnType<typeof vi.fn>;
   login: ReturnType<typeof vi.fn>;
+  networkCapture: ReturnType<typeof vi.fn>;
+  responses: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
 };
 
@@ -308,6 +310,11 @@ function fakeSession(id: string, token: string): FakeSession {
         body_text: "",
       },
     })),
+    networkCapture: vi.fn(async (input: { url_prefixes?: string[] } = {}) => ({
+      url_prefixes: input.url_prefixes ?? [],
+      captured: 0,
+    })),
+    responses: vi.fn(async () => ({ responses: [], has_more: false })),
     close: vi.fn(async () => undefined),
   };
 }
@@ -575,9 +582,49 @@ describe("lease server", () => {
         "click",
         "fill",
         "history",
+        "network_capture",
+        "responses",
         "close",
       ]),
     );
+
+    const published = JSON.parse(tools.body).tools as Array<{
+      name: string;
+      input_schema: {
+        additionalProperties: boolean;
+        properties: Record<string, { type: string; items?: { type: string } }>;
+      };
+    }>;
+    const captureSchema = published.find((tool) => tool.name === "network_capture")!;
+    expect(captureSchema.input_schema.properties.url_prefixes.type).toBe("array");
+    expect(captureSchema.input_schema.properties.url_prefixes.items?.type).toBe("string");
+    expect(captureSchema.input_schema.additionalProperties).toBe(false);
+    const responsesSchema = published.find((tool) => tool.name === "responses")!;
+    expect(responsesSchema.input_schema.properties.limit.type).toBe("integer");
+    expect(responsesSchema.input_schema.additionalProperties).toBe(false);
+
+    const subscribed = await request(harness.server.port, {
+      method: "POST",
+      path: "/v1/sessions/session-a/tools/network_capture",
+      headers: sessionHeaders(SESSION_A),
+      body: JSON.stringify({ url_prefixes: ["http://127.0.0.1:4788/api/"] }),
+    });
+    expect(subscribed.status).toBe(200);
+    expect(JSON.parse(subscribed.body).result.url_prefixes).toEqual([
+      "http://127.0.0.1:4788/api/",
+    ]);
+    expect(harness.sessions.get("session-a")!.networkCapture).toHaveBeenCalledWith({
+      url_prefixes: ["http://127.0.0.1:4788/api/"],
+    });
+
+    const responses = await request(harness.server.port, {
+      method: "POST",
+      path: "/v1/sessions/session-a/tools/responses",
+      headers: sessionHeaders(SESSION_A),
+      body: JSON.stringify({ after: 0, limit: 20 }),
+    });
+    expect(responses.status).toBe(200);
+    expect(JSON.parse(responses.body).result).toEqual({ responses: [], has_more: false });
 
     const snapshot = await request(harness.server.port, {
       method: "POST",
@@ -650,6 +697,31 @@ describe("lease server", () => {
     });
     expect(unknown.status).toBe(400);
     expect(JSON.parse(unknown.body).error.code).toBe("E_UNSUPPORTED");
+  });
+
+  it("surfaces a capture subsystem failure as ok:false, not an empty list", async () => {
+    const harness = await startLeaseHarness();
+    harness.sessions.get("session-a")!.responses.mockRejectedValueOnce(
+      new DemoError(
+        "E_CAPTURE_UNAVAILABLE",
+        "网络捕获不可用：Network.enable 失败：quota exceeded",
+      ),
+    );
+
+    const failed = await request(harness.server.port, {
+      method: "POST",
+      path: "/v1/sessions/session-a/tools/responses",
+      headers: sessionHeaders(SESSION_A),
+      body: "{}",
+    });
+
+    expect(failed.status).toBe(500);
+    const body = JSON.parse(failed.body);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("E_CAPTURE_UNAVAILABLE");
+    expect(body.error.message).toContain("quota exceeded");
+    expect(body.tool).toBeUndefined();
+    expect(body.result).toBeUndefined();
   });
 
   it("answers assert verdicts with 200: pass, fail, and bad arguments", async () => {

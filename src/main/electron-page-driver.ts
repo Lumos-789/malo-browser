@@ -11,18 +11,38 @@ type EvaluateResult<T> = {
 
 export class ElectronPageDriver implements PageDriver {
   private readonly lifecycleAtMs = new Map<string, number>();
+  private readonly cdpHandlers = new Map<string, Set<(params: Record<string, unknown>) => void>>();
   private readonly onDebuggerMessage = (
     _event: unknown,
     method: string,
-    params: { name?: string },
+    params: Record<string, unknown> | undefined,
   ): void => {
     if (method === "Page.lifecycleEvent" && typeof params?.name === "string") {
       this.lifecycleAtMs.set(params.name, Date.now());
     }
+    const handlers = this.cdpHandlers.get(method);
+    if (!handlers || handlers.size === 0) return;
+    const payload = params ?? {};
+    for (const handler of [...handlers]) handler(payload);
   };
 
   constructor(private readonly wc: WebContents) {
     this.wc.debugger.on("message", this.onDebuggerMessage);
+  }
+
+  onCdpEvent(
+    method: string,
+    handler: (params: Record<string, unknown>) => void,
+  ): () => void {
+    const handlers = this.cdpHandlers.get(method) ?? new Set();
+    handlers.add(handler);
+    this.cdpHandlers.set(method, handlers);
+    return () => {
+      const current = this.cdpHandlers.get(method);
+      if (!current) return;
+      current.delete(handler);
+      if (current.size === 0) this.cdpHandlers.delete(method);
+    };
   }
 
   async attach(): Promise<void> {

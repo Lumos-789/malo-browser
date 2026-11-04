@@ -331,13 +331,17 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/snapshot \
 
 Tools: `navigate`, `history`, `events`, `observe`, `snapshot`, `extract`, `click`,
 `fill`, `press`, `hover`, `select`, `focus`, `scroll`, `scroll_into_view`, `wait_for`,
-`sleep`, `assert`, `run_steps`, `watch`, `login`, `profiles`, `close`. `snapshot`
-returns body text, title, links, buttons, inputs, forms, tables, landmarks, iframes,
-dialogs and selectors for interactive elements; `extract` does targeted reads.
-`run_steps` runs a list of those tools in order (stop at the first failure by default),
-writes a run report to the session's `artifacts/run-<timestamp>.json`, and returns
-`{ ok, step_count, failed_step, steps, report_path }`; `watch`, `login`, `profiles` and
-`run_steps` cannot be nested inside `run_steps`.
+`sleep`, `assert`, `run_steps`, `network_capture`, `responses`, `watch`, `login`,
+`profiles`, `close`. `snapshot` returns body text, title, links, buttons, inputs, forms,
+tables, landmarks, iframes, dialogs and selectors for interactive elements; `extract`
+does targeted reads. `network_capture` subscribes this session to XHR/fetch response
+bodies for matching URL prefixes and `responses` returns them by seq, in daemon memory
+only. `run_steps` runs a list of those tools in order (stop at the first failure by
+default), writes a run report to the session's `artifacts/run-<timestamp>.json`, and
+returns `{ ok, step_count, failed_step, steps, report_path }`; `watch`, `login`,
+`profiles` and `run_steps` cannot be nested inside `run_steps`; `network_capture` and
+`responses` are session controls and are rejected there too, so captured bodies never
+reach a run report.
 
 Status mapping on the lease endpoint: bad arguments, unknown tools, selector-not-found
 and navigation policy violations → 400; unknown session → 404; locked profile → 409;

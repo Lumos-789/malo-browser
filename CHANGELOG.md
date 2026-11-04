@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.5
+
+- Added the `network_capture` and `responses` session tools: subscribe to URL prefixes,
+  navigate/interact, then poll the captured XHR/fetch response bodies. Capture reuses the
+  page driver's single CDP attach (no second debugger, no focus change); the Network
+  domain is enabled lazily with 64 MiB/8 MiB response buffers and disabled when the
+  subscription clears.
+- Records keep every response's metadata in one 500-entry window, while bodies are kept
+  only for subscribed hits up to 200 records and a 16 MiB budget. Each body is capped at
+  1 MiB (`body_truncated`); base64 payloads report `body_error: "binary"` instead of a
+  lossy UTF-8 decode, and queued bodies report `"pending"`. Query envelopes use
+  `has_more`, not `truncated`, so they cannot be confused with `body_truncated`.
+- Capture state is session-private and in memory only: bodies never reach logs, evidence,
+  traces or run reports, and `MaloNetworkInfo` is unchanged. A capture subsystem failure
+  surfaces as `E_CAPTURE_UNAVAILABLE` (`ok: false`) instead of an empty list.
+
 ## 0.1.4
 
 - `--mode=record` now leaves failed evidence for every pre-encode throw, including

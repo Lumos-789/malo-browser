@@ -12,8 +12,10 @@ import type {
   MaloLoginInput,
   MaloLoginResult,
   MaloNavigationDiagnostics,
+  MaloNetworkCaptureState,
   MaloNetworkInfo,
   MaloObservation,
+  MaloResponsesResult,
   MaloRunReport,
   MaloSessionEvent,
   MaloSessionSummary,
@@ -25,6 +27,7 @@ import { sleep } from "../tools";
 import { StageWindow } from "../windows/stage-window";
 import type { MaloAssertState } from "./assertions";
 import { buildAssertChecks, describeAssertFailure } from "./assertions";
+import { NetworkCapture } from "./network-capture";
 import { removePartitionDir } from "./profile-store";
 
 export type BrowserSessionOptions = {
@@ -104,6 +107,7 @@ export class BrowserSession {
   private readonly stage: StageWindow;
   private readonly partitionName: string;
   private readonly driver: ElectronPageDriver;
+  private readonly capture: NetworkCapture;
   private lastUsedMs = Date.now();
   private eventSeq = 0;
   private readonly events: MaloSessionEvent[] = [];
@@ -137,6 +141,7 @@ export class BrowserSession {
       toolbar: true,
     });
     this.driver = new ElectronPageDriver(this.stage.view.webContents);
+    this.capture = new NetworkCapture(this.driver);
   }
 
   static async create(options: BrowserSessionOptions): Promise<BrowserSession> {
@@ -1368,6 +1373,26 @@ export class BrowserSession {
     return this.events.filter((event) => event.seq > after).slice(0, bounded);
   }
 
+  async networkCapture(input: { url_prefixes?: string[] }): Promise<MaloNetworkCaptureState> {
+    this.assertOpen();
+    this.touch();
+    if (input.url_prefixes === undefined) return this.capture.state();
+    const state = await this.capture.setSubscription(input.url_prefixes);
+    this.record("network_capture.subscription", {
+      prefixes: state.url_prefixes.length,
+      captured: state.captured,
+    });
+    return state;
+  }
+
+  async responses(
+    input: { url_prefix?: string; after?: number; limit?: number } = {},
+  ): Promise<MaloResponsesResult> {
+    this.assertOpen();
+    this.touch();
+    return this.capture.query(input);
+  }
+
   record(type: string, detail?: Record<string, unknown>): void {
     this.eventSeq += 1;
     this.events.push({
@@ -1394,6 +1419,7 @@ export class BrowserSession {
         console.error(`[malo] 清理 session 存储失败：${(error as Error).message}`);
       }
     }
+    this.capture.dispose();
     this.driver.detach();
     this.stage.close();
     if (this.profile === null && this.options.partitionsDir !== undefined) {
@@ -1409,6 +1435,7 @@ export class BrowserSession {
     } catch {
       // the debugger may never have attached when creation failed early
     }
+    this.capture.dispose();
     this.stage.close();
   }
 

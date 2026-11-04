@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Network Capture Fixture</title>
+    <style>
+      body {
+        font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 32px;
+        color: #1f2933;
+      }
+      button {
+        display: block;
+        margin: 8px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Network Capture Fixture</h1>
+    <p>
+      Each button is a control that fires one XHR/fetch to the fixture server. The
+      <code>data-xhr</code> attribute names the endpoint so the unit harness can drive
+      the same sequence without a browser.
+    </p>
+    <button id="load-items" type="button" data-xhr="/api/items">Load items</button>
+    <button id="load-large" type="button" data-xhr="/api/large">Load large body</button>
+    <button id="load-binary" type="button" data-xhr="/api/binary">Load binary body</button>
+    <button id="load-empty" type="button" data-xhr="/api/empty">Load empty body</button>
+    <img src="/api/pixel.png" alt="fixture pixel" width="1" height="1" />
+    <p id="result" role="status"></p>
+    <script>
+      for (const button of document.querySelectorAll("button[data-xhr]")) {
+        button.addEventListener("click", () => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("GET", button.dataset.xhr);
+          xhr.onload = () => {
+            document.getElementById("result").textContent =
+              button.id + ": " + xhr.status + " " + xhr.responseText.slice(0, 80);
+          };
+          xhr.send();
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -167,6 +167,8 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/snapshot \
 - `scroll`、`scroll_into_view`、`wait_for`、`sleep`
 - `assert`（visible / hidden / text / value / url / count）
 - `run_steps`（批量串行执行上面的工具，产出 run report 文件）
+- `network_capture`（设置/查看 XHR/fetch 响应体捕获订阅）
+- `responses`（按 seq 游标查询捕获到的响应）
 - `watch`、`login`、`profiles`
 - `close`
 
@@ -232,8 +234,9 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/assert \
 
 `run_steps` 把一串工具调用交给 daemon 顺序执行，默认遇错即停（`stop_on_failure:false`
 可继续），最后把每一步的结果与错误写进 session `artifacts/` 下的 run report，
-返回 `{ ok, step_count, failed_step, steps, report_path }`。`watch`、`login`、`profiles`
-和 `run_steps` 自身不能再嵌进 `run_steps`。
+返回 `{ ok, step_count, failed_step, steps, report_path }`。`watch`、`login`、`profiles`、
+`network_capture`、`responses` 和 `run_steps` 自身不能再嵌进 `run_steps`（响应体永远
+不进 run report）。
 
 ```bash
 curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/run_steps \
@@ -249,6 +252,89 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/run_steps \
 导航失败会在 `details.navigation` 中带 `http_status`、`net_error`、`net_error_description` 和 `settle` 信息。
 
 旧版 `x-pagehand-*` token 头仍被接受一段时间，新脚本请使用 `x-malo-*`。
+
+### 网络响应捕获（XHR / fetch）
+
+`network_capture` 声明关心的 URL 前缀，`responses` 取回命中的响应体。文档化的时序是
+先订阅、再导航、再触发交互，最后按 `seq` 轮询：
+
+```bash
+BASE=http://127.0.0.1:7411
+SESSION=/v1/sessions/$SESSION_ID/tools
+AUTH=(-H "x-malo-lease-token: $LEASE_TOKEN" -H "x-malo-session-token: $SESSION_TOKEN" -H "content-type: application/json")
+
+# 1) 订阅（替换式；空数组=清空，省略=只查看）
+curl -X POST "$BASE$SESSION/network_capture" "${AUTH[@]}" \
+  -d '{"url_prefixes":["https://web-api.example.com/api/v1/action/"]}'
+
+# 2) 导航
+curl -X POST "$BASE/v1/sessions/$SESSION_ID/navigate" \
+  -H "x-malo-lease-token: $LEASE_TOKEN" -H "x-malo-session-token: $SESSION_TOKEN" \
+  -H "content-type: application/json" -d '{"url":"https://example.com/action/2026-11-05"}'
+
+# 3) 触发请求（标签、按钮等）
+curl -X POST "$BASE$SESSION/click" "${AUTH[@]}" -d '{"selector":"#tab-theme"}'
+
+# 4) 轮询；body_error=pending 表示 body 还在串行队列里，稍后再查
+curl -X POST "$BASE$SESSION/responses" "${AUTH[@]}" \
+  -d '{"url_prefix":"https://web-api.example.com/api/v1/action/","after":0,"limit":50}'
+```
+
+订阅语义：
+
+- `network_capture` 省略 `url_prefixes` 只返回当前订阅和已保留 body 的条数
+  （`{"url_prefixes":[],"captured":0}`）；`[]` 清空订阅并关闭 CDP 网络域。
+- 首次设置非空前缀时才发 `Network.enable`，并带 `maxTotalBufferSize=64 MiB`、
+  `maxResourceBufferSize=8 MiB`——不带这两个值，大响应体会取不到，看起来像页面把缓冲
+  淘汰了。清空订阅时发 `Network.disable`，丢弃已缓存 body，元数据保留。
+- 订阅是 session 私有的，关闭 session 即失效，不写 profile，不影响其他 session。
+- 捕获复用 `ElectronPageDriver` 已有的 debugger 附着，不会二次 attach，也不引入任何
+  窗口/焦点行为。
+
+`responses` 入参 `url_prefix`（结果过滤）、`after`（取 `seq` 大于它的记录）、`limit`
+（1–200，默认 50），返回 `{"responses":[record],"has_more":bool}`。`has_more` 表示还有
+未返回的匹配记录——故意不叫 `truncated`，避免和单条 body 的 `body_truncated` 混淆。
+record 形态：
+
+```json
+{
+  "seq": 12,
+  "url": "https://web-api.example.com/api/v1/action/field?x=1",
+  "status": 200,
+  "mime_type": "application/json",
+  "resource_type": "XHR",
+  "body": "{\"errCode\":\"0\"}",
+  "body_truncated": false,
+  "body_error": null
+}
+```
+
+`body` 是原始文本，不替调用方解析 JSON；`body_truncated=true` 表示超过单条 **1 MiB**
+上限、只保留前 1 MiB。`body_error` 只在 `body=null` 时出现，如实标注原因，绝不造空成功：
+
+| 值 | 含义 |
+|---|---|
+| `not_subscribed` | 未命中订阅，只记元数据 |
+| `no_body` | 204/304 或空响应体（合法态） |
+| `evicted` | 被 200 条 captured 上限或 16 MiB 字节预算挤出 |
+| `pending` | body 仍在串行队列里；调用方稍后重试 `responses` |
+| `binary` | `Network.getResponseBody` 返回 base64（二进制），不按 UTF-8 解码 |
+| `getResponseBody_failed: <原因>` | CDP 取 body 失败（如导航离开后缓冲已清），不重试 |
+| `too_large` | 契约保留值；当前实现对超限 body 截断，不会返回此值 |
+
+内存模型：所有 resource type 都记元数据，可见列表最多 **500 条**（一页图片不会把后来的
+JSON 元数据挤掉）；body 只为订阅命中的响应保留，最多 **200 条**且总字节预算 **16 MiB**，
+超限时最老的 body 先丢、元数据保留并标 `body_error="evicted"`。`responses` 的 `limit`
+仍是 1–200。body 只存在于 daemon 内存和 `responses` 的返回值中，不写日志、
+`evidence/*.json`、trace 或 run report，也不进 `MaloNetworkInfo`。
+
+捕获子系统自身故障（`Network.enable` / `Network.disable` 被拒等）会让
+`network_capture` / `responses` 返回显式的 `E_CAPTURE_UNAVAILABLE` 错误（HTTP 5xx、
+`ok:false`），不会伪装成空列表；空列表只表示真的没有匹配记录。
+
+限制：CDP session 附着在页面 target 上，所以请求由跨进程 iframe（OOPIF）或 service
+worker 发出时不会被捕获。这是刻意划定的范围，不是 bug；需要时改用页面主 frame 发起
+等价请求。
 
 ## 观察
 

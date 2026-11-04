@@ -53,6 +53,11 @@ function fakeSession(): MaloToolSession {
       attempts: 1,
       observation: { url: "", title: "", body_text: "" },
     })),
+    networkCapture: vi.fn(async (input: { url_prefixes?: string[] } = {}) => ({
+      url_prefixes: input.url_prefixes ?? [],
+      captured: 0,
+    })),
+    responses: vi.fn(async () => ({ responses: [], has_more: false })),
     eventsAfter: vi.fn(() => []),
     close: vi.fn(async () => undefined),
   };
@@ -140,6 +145,92 @@ describe("malo-browser tool manifest", () => {
     expect(MALO_TOOLS.length).toBeGreaterThanOrEqual(16);
   });
 
+  it("publishes network capture schemas with typed prefixes and a bounded window", () => {
+    const captureTool = MALO_TOOLS.find((tool) => tool.name === "network_capture");
+    expect(captureTool).toBeDefined();
+    const prefixes = captureTool!.input_schema.properties.url_prefixes as {
+      type: string;
+      items: { type: string };
+    };
+    expect(prefixes.type).toBe("array");
+    expect(prefixes.items.type).toBe("string");
+    expect(captureTool!.input_schema.additionalProperties).toBe(false);
+
+    const responsesTool = MALO_TOOLS.find((tool) => tool.name === "responses");
+    expect(responsesTool).toBeDefined();
+    expect(responsesTool!.input_schema.properties.limit).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 200,
+      default: 50,
+    });
+    expect(responsesTool!.input_schema.properties.after).toMatchObject({
+      type: "integer",
+      minimum: 0,
+      default: 0,
+    });
+    expect(responsesTool!.input_schema.additionalProperties).toBe(false);
+  });
+
+  it("dispatches subscriptions and response windows to the session", async () => {
+    const session = fakeSession();
+    await invokeMaloTool(
+      "network_capture",
+      { url_prefixes: ["https://api.example.com/v1/"] },
+      session,
+    );
+    expect(session.networkCapture).toHaveBeenCalledWith({
+      url_prefixes: ["https://api.example.com/v1/"],
+    });
+
+    await invokeMaloTool("network_capture", {}, session);
+    expect(session.networkCapture).toHaveBeenLastCalledWith({ url_prefixes: undefined });
+
+    await invokeMaloTool(
+      "responses",
+      { url_prefix: "https://api.example.com/v1/", after: 7, limit: 10 },
+      session,
+    );
+    expect(session.responses).toHaveBeenCalledWith({
+      url_prefix: "https://api.example.com/v1/",
+      after: 7,
+      limit: 10,
+    });
+
+    await invokeMaloTool("responses", {}, session);
+    expect(session.responses).toHaveBeenLastCalledWith({
+      url_prefix: undefined,
+      after: 0,
+      limit: 50,
+    });
+
+    for (const args of [
+      { url_prefixes: "https://api.example.com/" },
+      { url_prefixes: [42] },
+      { url_prefixes: [""] },
+    ]) {
+      await expect(invokeMaloTool("network_capture", args, session)).rejects.toMatchObject({
+        code: "E_BAD_REQUEST",
+      });
+    }
+    await expect(
+      invokeMaloTool("responses", { limit: 201 }, session),
+    ).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    await expect(
+      invokeMaloTool("responses", { after: -1 }, session),
+    ).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+  });
+
+  it("propagates a capture subsystem failure instead of returning an empty list", async () => {
+    const session = fakeSession();
+    session.responses = vi.fn(async () => {
+      throw new DemoError("E_CAPTURE_UNAVAILABLE", "Network.enable 失败：quota exceeded");
+    });
+    await expect(invokeMaloTool("responses", {}, session)).rejects.toMatchObject({
+      code: "E_CAPTURE_UNAVAILABLE",
+    });
+  });
+
   it("runs a step list in order and returns a bound report", async () => {
     const session = fakeSession();
     const { result } = await invokeMaloTool(
@@ -191,7 +282,7 @@ describe("malo-browser tool manifest", () => {
 
   it("rejects nested or session-control steps", async () => {
     const session = fakeSession();
-    for (const type of ["run_steps", "close", "watch", "profiles"]) {
+    for (const type of ["run_steps", "close", "watch", "profiles", "network_capture", "responses"]) {
       await expect(
         invokeMaloTool("run_steps", { steps: [{ type }] }, session),
       ).rejects.toMatchObject({ code: "E_BAD_REQUEST" });

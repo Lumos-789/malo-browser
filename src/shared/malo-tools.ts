@@ -274,6 +274,37 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
     },
   },
   {
+    name: "network_capture",
+    description:
+      "Set or inspect this session's response-body capture subscription. Non-empty url_prefixes replace the subscription and enable CDP Network capture; [] clears it and disables capture. Omit url_prefixes to inspect only. Bodies stay in daemon memory, never in logs or evidence, and the subscription is private to this session.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url_prefixes: {
+          type: "array",
+          items: { type: "string", description: "URL prefix such as https://api.example.com/v1/." },
+          description:
+            "Replace the subscription with these URL prefixes; [] clears it. Omit to inspect only.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "responses",
+    description:
+      "Query responses captured after subscribing with network_capture. Records are ordered by seq; use after as a cursor. A body_error of pending means the body is still queued, so poll again; the record shape carries url/status/mime_type/resource_type plus the raw body.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url_prefix: { type: "string", description: "Only return URLs starting with this prefix." },
+        after: { type: "integer", minimum: 0, default: 0, description: "Return records with seq greater than this." },
+        limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "watch",
     description:
       "Show or hide the session window for a human. Defaults to an inactive window that does not steal focus; use focus=true only when the human explicitly needs the foreground.",

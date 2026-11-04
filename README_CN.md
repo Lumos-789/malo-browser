@@ -306,12 +306,15 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/snapshot \
 
 工具：`navigate`、`history`、`events`、`observe`、`snapshot`、`extract`、`click`、
 `fill`、`press`、`hover`、`select`、`focus`、`scroll`、`scroll_into_view`、`wait_for`、
-`sleep`、`assert`、`run_steps`、`watch`、`login`、`profiles`、`close`。`snapshot` 返回
-正文、标题、链接、按钮、输入框、表单、表格、landmark、iframe、dialog 和可交互元素的
-selector；`extract` 做定向读取。`run_steps` 顺序执行一串工具（默认遇错即停），把 run
-report 写进 session 的 `artifacts/run-<timestamp>.json`，返回
+`sleep`、`assert`、`run_steps`、`network_capture`、`responses`、`watch`、`login`、
+`profiles`、`close`。`snapshot` 返回正文、标题、链接、按钮、输入框、表单、表格、
+landmark、iframe、dialog 和可交互元素的 selector；`extract` 做定向读取。
+`network_capture` 为当前 session 订阅命中 URL 前缀的 XHR/fetch 响应体，`responses`
+按 seq 取回，body 只留在 daemon 内存。`run_steps` 顺序执行一串工具（默认遇错即停），
+把 run report 写进 session 的 `artifacts/run-<timestamp>.json`，返回
 `{ ok, step_count, failed_step, steps, report_path }`；`watch`、`login`、`profiles` 与
-`run_steps` 自身不能再嵌进 `run_steps`。
+`run_steps` 自身不能再嵌进 `run_steps`；`network_capture`、`responses` 属于 session
+控制，同样会被拒绝，捕获到的 body 不会进入 run report。
 
 lease endpoint 状态码：参数错误、未知工具、选择器找不到、导航策略拒绝 → 400；session
 不存在 → 404；profile 被占用 → 409；session 超上限 → 429；导航失败 → 502；步骤超时 →

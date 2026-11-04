@@ -1,7 +1,7 @@
 {
   "name": "malo-browser",
   "productName": "Malo Browser",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Scripted browser demo tool with 1080p30 evidence recording, plus malo-browser: a background agent browser runtime with port leases and isolated sessions",
   "license": "MIT",

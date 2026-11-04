@@ -11,7 +11,9 @@ import type {
   MaloLightObservation,
   MaloLoginInput,
   MaloLoginResult,
+  MaloNetworkCaptureState,
   MaloObservation,
+  MaloResponsesResult,
   MaloRunReport,
   MaloRunStepResult,
   MaloSessionEvent,
@@ -40,6 +42,12 @@ export type MaloToolSession = {
     height?: number;
   }): Promise<MaloWatchResult>;
   login(input: MaloLoginInput): Promise<MaloLoginResult>;
+  networkCapture(input: { url_prefixes?: string[] }): Promise<MaloNetworkCaptureState>;
+  responses(input: {
+    url_prefix?: string;
+    after?: number;
+    limit?: number;
+  }): Promise<MaloResponsesResult>;
   eventsAfter(after: number, limit?: number): MaloSessionEvent[];
   close(): Promise<void>;
 };
@@ -124,6 +132,28 @@ export async function invokeMaloTool(
         readInteger(args, "limit", 100, 1, 200),
       );
       result = { events };
+      break;
+    }
+    case "network_capture": {
+      let prefixes: string[] | undefined;
+      if (args.url_prefixes !== undefined) {
+        if (!Array.isArray(args.url_prefixes)) throw bad("url_prefixes 必须是字符串数组");
+        for (const prefix of args.url_prefixes) {
+          if (typeof prefix !== "string" || prefix.trim() === "") {
+            throw bad("url_prefixes 必须是非空字符串数组");
+          }
+        }
+        prefixes = args.url_prefixes as string[];
+      }
+      result = await session.networkCapture({ url_prefixes: prefixes });
+      break;
+    }
+    case "responses": {
+      result = await session.responses({
+        url_prefix: readString(args, "url_prefix", false),
+        after: readInteger(args, "after", 0, 0, Number.MAX_SAFE_INTEGER),
+        limit: readInteger(args, "limit", 50, 1, 200),
+      });
       break;
     }
     case "assert": {
@@ -239,7 +269,16 @@ export function assertFailureResult(error: unknown): MaloAssertFailure | null {
   };
 }
 
-const RUN_STEP_BLOCKED = new Set(["run_steps", "close", "watch", "profiles"]);
+// network_capture and responses are session controls; responses also carries
+// body text, which must never reach the run report written by run_steps.
+const RUN_STEP_BLOCKED = new Set([
+  "run_steps",
+  "close",
+  "watch",
+  "profiles",
+  "network_capture",
+  "responses",
+]);
 
 type RunStep = { type: string; args: Record<string, unknown> };
 
