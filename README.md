@@ -434,7 +434,6 @@ scripts/
   control-smoke.mjs  # control API: load -> record -> evidence
   toolbar-smoke.mjs  # handoff toolbar (hidden StageWindow)
   malo-web-probe.mjs # site compatibility probe (captures + screenshots)
-  baseline_chrome.py # headless Chrome baseline (reuses recorder-pipe's Recorder)
   compare.cjs        # SSIM comparison between two videos
 ```
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3
+
+- Removed `docs/phase0-report.md`, `docs/phase1.md`, `docs/phase1b.md`: internal
+  engineering reports, never linked from the README, the skill or any test.
+- Removed `scripts/baseline_chrome.py`. It rebuilt a Chrome baseline from the
+  author's private `~/recorder-pipe` virtualenv, so it could not run on another
+  machine; `scripts/compare.cjs` still compares two recordings.
+
 ## 0.1.2
 
 - `README.md` is English again and `README_CN.md` is its Chinese translation with

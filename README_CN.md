@@ -399,7 +399,6 @@ scripts/
   control-smoke.mjs  # 控制 API：加载 → 录制 → evidence
   toolbar-smoke.mjs  # 人工接管工具条（隐藏 StageWindow）
   malo-web-probe.mjs # 站点兼容性探针（抓帧 + 截图）
-  baseline_chrome.py # 无头 Chrome 对照（复用 recorder-pipe 的 Recorder）
   compare.cjs        # 两段视频的 SSIM 对比
 ```
 
