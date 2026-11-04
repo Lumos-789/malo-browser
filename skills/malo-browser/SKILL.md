@@ -15,7 +15,8 @@ it gets the real GitHub repo running on the user's machine.
 
 ## Prerequisites
 
-- Node.js >= 22.12 (not the 23 line; the project is developed and tested on Node 24)
+- Node.js on the 22 line >= 22.12, 24.x, or >= 26 (`engines` is
+  `^22.12.0 || ^24.0.0 || >=26.0.0`; the 23 and 25 lines are excluded)
 - ffmpeg + ffprobe on PATH (missing → exit code 3)
 - macOS (window modes and recording are verified on macOS; hidden mode uses the accessory activation policy)
 - Python 3 (only for the bundled fixture static server)
@@ -53,7 +54,7 @@ Sanity gate: `npm run typecheck && npm test` — both green before anything else
 3. Visible stage for manual browsing: `npx electron . --mode=stage`
 4. Director console + control API: `npm run start:control` — the API binds
    127.0.0.1 only; a random token is written to `<out>/control.json` (0600);
-   curl examples are in `docs/control-api.md`.
+   curl examples are in the repository README (`App control API` section).
 5. Full scripted scene run:
    `npx electron . --mode=app --autorun=report-review --scenes=fixtures/scenes`
 
@@ -77,6 +78,12 @@ expected/actual plus a failure screenshot; a failed assertion is HTTP 200 with
 so agent-driven runs end in a pass/fail verdict instead of a vague observation.
 `run_steps` runs a batch of those tools back to back and writes a per-step run
 report.
+
+Response bodies from the network layer: `network_capture` subscribes the session to
+XHR/fetch responses matching URL prefixes, `responses` returns bodies by `seq` (daemon
+memory only). Order: subscribe, navigate, interact, then poll — requests sent before the
+subscription are missed. Scope: the CDP session attaches to the page target, so OOPIF
+(cross-process iframe) and Service Worker requests are never captured.
 
 Login walls and human checks: `watch` shows the real page in an inactive window
 (no focus steal, auto-hides after success) with a native title bar and a browser
@@ -121,7 +128,8 @@ the daemon lives under `<data-dir>/chromium`.
 
 ## Troubleshoot
 
-- `EBADENGINE` warning/failure → wrong Node line; use >= 22.12 (not 23).
+- `EBADENGINE` warning/failure → wrong Node line; use a range from `engines`
+  (>=22.12 on the 22 line, 24.x, or >=26; not 23/25).
 - Exit 0 with no stdout and no files in `<out>` → `ELECTRON_RUN_AS_NODE` is set
   in that shell (`echo $ELECTRON_RUN_AS_NODE`), so Electron ran as plain Node and
   never started the app; re-run with `env -u ELECTRON_RUN_AS_NODE npx electron ...`.

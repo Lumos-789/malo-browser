@@ -53,7 +53,7 @@ describe("controlApiTokenHint", () => {
   it("指明 token 落盘路径与文档指引，单行不折断", () => {
     const hint = controlApiTokenHint("/tmp/out/control.json");
     expect(hint).toContain("/tmp/out/control.json");
-    expect(hint).toContain("docs/control-api.md");
+    expect(hint).toContain("README.md 的 App control API 节");
     expect(hint).not.toContain("\n");
   });
 

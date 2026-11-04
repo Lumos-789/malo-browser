@@ -111,7 +111,7 @@ export function formatOverwriteWarning(label: string, existingFiles: string[]): 
 }
 
 export function controlApiTokenHint(recordFile: string): string {
-  return `鉴权 token 已写入 ${recordFile}（0600），请求头写法与 curl 示例见 docs/control-api.md`;
+  return `鉴权 token 已写入 ${recordFile}（0600），请求头写法与 curl 示例见 README.md 的 App control API 节`;
 }
 
 export type ListenSurface = "control" | "broker" | "lease";

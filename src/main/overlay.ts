@@ -95,7 +95,3 @@ export async function overlayHighlight(page: CdpPage, rect: Rect, ms: number): P
     `window.__maloBrowserOverlay.highlight({ left: ${rect.left}, top: ${rect.top}, width: ${rect.width}, height: ${rect.height} }, ${ms})`,
   );
 }
-
-export async function overlayClear(page: CdpPage): Promise<void> {
-  await page.evaluate("window.__maloBrowserOverlay.clear()");
-}

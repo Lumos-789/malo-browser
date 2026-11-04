@@ -97,7 +97,7 @@ npx electron . --mode=record --seconds=10 --out=evidence --label=hidden
 `--plain`。参数拼错会直接报错退出；`--help` 打印完整说明，`--version` 打印版本号。
 
 本地控制 API 只绑回环地址，启动时生成随机 token 并写到 `<out>/control.json`（0600）。
-路由与 curl 示例见 [docs/control-api.md](docs/control-api.md)。
+路由与 curl 示例见下文「应用控制 API」一节。
 
 ### 窗口与焦点模式
 
@@ -252,7 +252,7 @@ take 仍保留视频与失败 evidence。
   `status: "failed"`、`video: null`、`error.code`、`error.message` 与失败步骤
   `error.step`；覆盖打开舞台（例如页面不可达，记为 `ERR_CONNECTION_REFUSED`）、采帧、
   步骤与编码失败。失败前已写出的部分产物列在 `artifacts` 里。
-- app 模式（autorun、控制 API、IPC）在录制器编码之前失败时，写该 take 的
+- app 模式（`--autorun`、控制 API、IPC）在录制器编码之前失败时，写该 take 的
   `take-01.evidence.json`，含 `status: "failed"`、`video: null`、`error.code` 与
   `error.message`——包括 0 帧的 `E_RECORDER_NO_FRAMES`——随后继续抛原始错误，所以退出码
   / 控制 API 错误行为不变。
@@ -289,7 +289,9 @@ curl -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:$PORT/events
 `{"ok":true,"result":...}`；`DemoError` 映射为 400，`E_PROFILE_LOCKED` /
 `E_STEP_TIMEOUT` / `E_RECORDER_NO_FRAMES` 为 409，其余为 500。`/events` 是 SSE：先回
 `: connected` 注释行，此后每 15 秒一行 `: ping`，`data:` 行是 `AppEvent` JSON。token
-在 `<out>/control.json`（0600）里。完整路由见 [docs/control-api.md](docs/control-api.md)。
+在 `<out>/control.json`（0600）里，内容为 `{url, token, pid}`，服务端用
+`crypto.timingSafeEqual` 比较。接口不返回 CORS 头，跨源浏览器脚本无法直接调用，
+只面向本机脚本。
 
 ### Agent 工具 API
 
@@ -470,7 +472,8 @@ scripts/
   回收；不做连续视频推流。
 - 登录处理是自动识别加 selector 覆盖，不是按站点配置的适配层。
 - 站点可能在网络层 / 人机校验层拦自动化或无头浏览器，见
-  [docs/malo-web-compat.md](docs/malo-web-compat.md)。
+  [docs/malo-web-compat.md](docs/malo-web-compat.md)。`network_capture` 只覆盖页面
+  target：OOPIF（跨进程 iframe）与 Service Worker 发出的请求抓不到。
 - 0.1.x 契约变更：`assert` 失败是 HTTP 200 加 `result.ok: false`，不再是 HTTP 500；
   按 500 判断的调用方必须改。
 

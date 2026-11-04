@@ -105,8 +105,8 @@ Common flags: `--url`, `--width`, `--height`, `--out`, `--label`, `--keep-frames
 `--version` prints the version.
 
 The app control API binds only to loopback, generates a random token at startup and
-writes it to `<out>/control.json` (0600). Routes and curl examples are in
-[docs/control-api.md](docs/control-api.md).
+writes it to `<out>/control.json` (0600). Routes and curl examples are in the
+[App control API](#app-control-api) section below.
 
 ### Window and focus modes
 
@@ -313,7 +313,9 @@ curl -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:$PORT/events
 `E_PROFILE_LOCKED` / `E_STEP_TIMEOUT` / `E_RECORDER_NO_FRAMES` to 409, and anything else
 to 500. `/events` is SSE: a `: connected` comment, then a `: ping` comment every 15
 seconds, and `data:` lines carrying `AppEvent` JSON. The token is in
-`<out>/control.json` (0600). Full route list: [docs/control-api.md](docs/control-api.md).
+`<out>/control.json` (0600) as `{url, token, pid}` and is compared with
+`crypto.timingSafeEqual`. The server sends no CORS headers, so a cross-origin browser
+script cannot call it; the API is for local scripts.
 
 ### Agent tool API
 
@@ -519,7 +521,8 @@ scripts/
 - Login handling is auto-detection plus selector overrides, not a per-site adapter
   layer.
 - Sites can block automated or headless browsers at the network / challenge layer; see
-  [docs/malo-web-compat.md](docs/malo-web-compat.md).
+  [docs/malo-web-compat.md](docs/malo-web-compat.md). `network_capture` covers the page
+  target only: OOPIF (cross-process iframe) and Service Worker requests are not captured.
 - 0.1.x contract change: `assert` failures are HTTP 200 with `result.ok: false`, not
   HTTP 500. Callers that keyed on 500 must be updated.
 

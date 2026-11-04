@@ -118,21 +118,6 @@ export function stepStatusText(status: StepStatus): string {
   }
 }
 
-export function stepStatusTone(status: StepStatus): Tone {
-  switch (status) {
-    case "passed":
-      return "ok";
-    case "running":
-      return "warn";
-    case "failed":
-      return "danger";
-    case "skipped":
-      return "info";
-    default:
-      return "idle";
-  }
-}
-
 export function isRecorderTransitional(status: RecorderState): boolean {
   return status === "starting" || status === "stopping";
 }

@@ -111,7 +111,7 @@ export const USAGE = `Malo Browser — 演示用浏览器
   electron . --mode=daemon --daemon-port=7410 --port-min=7411 --port-max=7499
 
 参数拼错会直接报错退出；--help 可随时打印本说明，--version 打印版本号。
-更多说明见 README.md、docs/control-api.md 与 docs/malo-browser.md。`;
+更多说明见 README.md 与 docs/malo-browser.md。`;
 
 export function isHelpRequested(argv: string[]): boolean {
   return argv.includes("--help") || argv.includes("-h");
