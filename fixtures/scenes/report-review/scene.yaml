@@ -1,0 +1,63 @@
+schema_version: 1
+id: report-review
+title: 信审复核台
+description: 展示风险订单筛选、复核计数与高亮
+file: index.html
+viewport:
+  width: 1440
+  height: 900
+  device_scale_factor: 1
+profile: demo
+allow: []
+permissions: []
+reset_policy: reload
+vars:
+  keyword: 风险
+
+steps:
+  - id: ready
+    action: wait_for
+    selector: "[data-demo-state='ready']"
+    state: visible
+    timeout_ms: 10000
+    note: 等列表加载完成
+
+  - id: point-button
+    action: highlight
+    data_demo_id: increment
+    seconds: 0.8
+    note: 先指出复核按钮
+
+  - id: mark-reviewed
+    action: click
+    data_demo_id: increment
+    wait_after_ms: 400
+    note: 标记一条已复核
+
+  - id: search-risk
+    action: fill
+    data_demo_id: search
+    text: "${keyword}"
+    wait_after_ms: 400
+    note: 筛出风险订单
+
+  - id: check-row
+    action: assert
+    visible: "[data-demo-id='row-3']"
+    count: 1
+    selector: "[data-demo-id^='row-']"
+    note: 只剩风险行
+
+  - id: spotlight-risk
+    action: spotlight
+    data_demo_id: row-3
+    seconds: 2.5
+    dim: 0.55
+    note: 强调这条风险订单
+
+  - id: annotate
+    action: annotate
+    data_demo_id: row-3
+    text: 金额异常，需要人工复核
+    seconds: 2.5
+    note: 讲解重点

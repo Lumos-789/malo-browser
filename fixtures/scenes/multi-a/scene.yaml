@@ -1,0 +1,33 @@
+schema_version: 1
+id: multi-a
+title: 多场景演示 · 第一幕
+description: 1280x720 的入口页，演示中途切到第二幕
+file: index.html
+viewport:
+  width: 1280
+  height: 720
+  device_scale_factor: 1
+profile: demo
+allow: []
+permissions: []
+reset_policy: reload
+
+steps:
+  - id: ready
+    action: wait_for
+    selector: "[data-demo-state='ready']"
+    state: visible
+    timeout_ms: 10000
+    note: 等第一幕就绪
+
+  - id: point-card
+    action: highlight
+    data_demo_id: card
+    seconds: 1.2
+    note: 指出第一幕的卡片
+
+  - id: switch-to-b
+    action: scene
+    scene_id: multi-b
+    hold_ms: 1500
+    note: 切到 1600x900 的第二幕

@@ -1,0 +1,18 @@
+schema_version: 1
+id: login-demo
+title: Account login
+description: Real form interaction through the configured account profile.
+file: index.html
+viewport:
+  width: 1200
+  height: 800
+steps:
+  - id: sign-in
+    action: login
+    account_id: fixture
+    timeout_ms: 5000
+  - id: confirm-session
+    action: assert
+    selector: "#signed-in"
+    text: Signed in as demo@example.test
+    timeout_ms: 2000

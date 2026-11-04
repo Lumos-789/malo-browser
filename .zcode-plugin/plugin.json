@@ -1,0 +1,24 @@
+{
+  "name": "malo-browser",
+  "version": "0.1.2",
+  "description": "Scripted browser demo tool: scene-driven Electron stage for live web demos, headless 1080p30 recording with evidence files, director console and loopback control API. The bundled skill guides your agent through cloning, installing, running scenes and troubleshooting.",
+  "description_i18n": {
+    "en": "Scripted browser demo tool: scene-driven Electron stage for live web demos, headless 1080p30 recording with evidence files, director console and loopback control API. The bundled skill guides your agent through cloning, installing, running scenes and troubleshooting.",
+    "zh-CN": "脚本化浏览器演示工具：场景脚本驱动的 Electron 演示舞台、无头 1080p30 录制并产出证据文件、导演控制台与本地控制 API。内置技能引导 agent 完成克隆、安装、跑场景与排障。"
+  },
+  "author": {
+    "name": "Lumos-789",
+    "url": "https://github.com/Lumos-789"
+  },
+  "homepage": "https://github.com/Lumos-789/malo-browser",
+  "repository": "https://github.com/Lumos-789/malo-browser",
+  "license": "MIT",
+  "keywords": [
+    "demo",
+    "recording",
+    "electron",
+    "browser",
+    "screencast"
+  ],
+  "skills": "skills"
+}

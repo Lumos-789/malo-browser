@@ -1,0 +1,110 @@
+{
+  "name": "malo-browser",
+  "productName": "Malo Browser",
+  "version": "0.1.2",
+  "private": true,
+  "description": "Scripted browser demo tool with 1080p30 evidence recording, plus malo-browser: a background agent browser runtime with port leases and isolated sessions",
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "electron",
+    "demo",
+    "recording",
+    "browser",
+    "agent"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "skills/malo-browser/",
+    "assets/malo-browser/",
+    ".codex-plugin/plugin.json",
+    ".zcode-plugin/plugin.json",
+    "README.md",
+    "README_CN.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.12.0 || ^24.0.0 || >=26.0.0",
+    "dsh": ">=0.2.1-rc.2 <0.3.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-skill-filesystem": ">=0.1.0-rc.6 <0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-skill-filesystem": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "npm run build:main && npm run build:fixture && npm run build:director",
+    "build:main": "tsc -p tsconfig.main.json && printf '{\"type\":\"commonjs\"}\\n' > out/package.json",
+    "build:fixture": "vite build --config vite.fixture.config.mts",
+    "build:director": "vite build --config vite.director.config.mts",
+    "start": "npm run build && electron . --mode=app",
+    "start:control": "npm run build && electron . --mode=app --control-api=true",
+    "daemon": "npm run build && electron . --mode=daemon",
+    "smoke:malo": "node scripts/malo-smoke.mjs",
+    "smoke:toolbar": "npm run build && electron scripts/toolbar-smoke.mjs",
+    "smoke:control": "node scripts/control-smoke.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json",
+    "stage": "npm run build && electron . --mode=stage",
+    "record": "npm run build && electron . --mode=record",
+    "package": "npm run build && electron-builder --mac dir"
+  },
+  "dependencies": {
+    "lucide-react": "1.63.0",
+    "pngjs": "7.0.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/pngjs": "6.0.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  },
+  "build": {
+    "appId": "dev.malo-browser.phase0",
+    "productName": "Malo Browser",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.js",
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "extendInfo": {
+        "LSUIElement": true
+      },
+      "target": [
+        "dir"
+      ]
+    }
+  }
+}

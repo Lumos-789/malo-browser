@@ -1,0 +1,27 @@
+schema_version: 1
+id: multi-b
+title: 多场景演示 · 第二幕
+description: 1600x900 的续页，验证切换后尺寸与白名单都跟着场景走
+file: index.html
+viewport:
+  width: 1600
+  height: 900
+  device_scale_factor: 1
+profile: demo
+allow: []
+permissions: []
+reset_policy: reload
+
+steps:
+  - id: ready
+    action: wait_for
+    selector: "[data-demo-state='ready']"
+    state: visible
+    timeout_ms: 10000
+    note: 等第二幕就绪
+
+  - id: point-panel
+    action: highlight
+    data_demo_id: panel
+    seconds: 1.2
+    note: 指出第二幕的面板
