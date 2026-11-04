@@ -2,6 +2,11 @@
 
 ## 0.1.5
 
+- `scripts/pack-dsh-bundle.sh` builds and packs the prebuilt DSH bundle attached
+  to the GitHub release. The DSH plugin is installed from that asset, because
+  `out/` is gitignored and a source install would leave `index.js` pointing at a
+  compiled entry that does not exist yet.
+
 - Added the `network_capture` and `responses` session tools: subscribe to URL prefixes,
   navigate/interact, then poll the captured XHR/fetch response bodies. Capture reuses the
   page driver's single CDP attach (no second debugger, no focus change); the Network
