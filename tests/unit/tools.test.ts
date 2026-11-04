@@ -1,12 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   controlApiTokenHint,
   createEncodeProgressLine,
   explainListenFailure,
   explainLoadFailure,
   formatOverwriteWarning,
+  resolveToolOnPath,
   runToolWithProgress,
 } from "../../src/main/tools";
+import { DemoError, errorCodeFor } from "../../src/shared/errors";
 
 describe("explainLoadFailure", () => {
   it("fixture 默认地址连接被拒时给出可直接复制的服务启动命令", () => {
@@ -159,5 +164,60 @@ describe("createEncodeProgressLine", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("resolveToolOnPath", () => {
+  const dirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  async function toolDir(name: "ffmpeg" | "ffprobe"): Promise<string> {
+    const dir = await mkdtemp(path.join(os.tmpdir(), `malo-${name}-`));
+    dirs.push(dir);
+    const file = path.join(dir, name);
+    await writeFile(file, "#!/bin/sh\nexit 0\n");
+    await chmod(file, 0o755);
+    return dir;
+  }
+
+  it("uses the PATH hit before any fallback directory", async () => {
+    const onPath = await toolDir("ffmpeg");
+    const fallback = await toolDir("ffmpeg");
+    expect(resolveToolOnPath("ffmpeg", onPath, [fallback])).toBe(path.join(onPath, "ffmpeg"));
+  });
+
+  it("falls back to the documented directories when PATH has no hit", async () => {
+    const fallback = await toolDir("ffprobe");
+    expect(resolveToolOnPath("ffprobe", "", [fallback])).toBe(path.join(fallback, "ffprobe"));
+  });
+
+  it("throws E_FFMPEG_MISSING when neither PATH nor the fallbacks have the tool", async () => {
+    const missing = await mkdtemp(path.join(os.tmpdir(), "malo-missing-"));
+    await rm(missing, { recursive: true, force: true });
+    let failure: unknown;
+    try {
+      resolveToolOnPath("ffmpeg", missing, [path.join(missing, "homebrew")]);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(DemoError);
+    expect((failure as DemoError).code).toBe("E_FFMPEG_MISSING");
+    expect((failure as Error).message).toContain("找不到 ffmpeg");
+  });
+});
+
+describe("errorCodeFor", () => {
+  it("keeps a DemoError code and extracts the Chromium code from a wrapped load failure", () => {
+    expect(errorCodeFor(new DemoError("E_FFMPEG_FAILED", "boom"))).toBe("E_FFMPEG_FAILED");
+    expect(
+      errorCodeFor(new Error("页面无法连接：http://127.0.0.1:1/（net::ERR_CONNECTION_REFUSED）")),
+    ).toBe("ERR_CONNECTION_REFUSED");
+  });
+
+  it("falls back to E_RECORDER_FAILED for plain errors without a code", () => {
+    expect(errorCodeFor(new Error("boom"))).toBe("E_RECORDER_FAILED");
   });
 });

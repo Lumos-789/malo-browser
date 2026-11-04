@@ -81,3 +81,19 @@ export function stripErrorCode(code: string, message: string): string {
   const prefix = `${code}: `;
   return message.startsWith(prefix) ? message.slice(prefix.length) : message;
 }
+
+const CHROMIUM_ERROR_PATTERN = /\b(ERR_[A-Z0-9_]+)\b/;
+const CODE_PATTERN = /\b(E_[A-Z0-9_]+)\b/;
+
+export function errorCodeFor(error: unknown): string {
+  const candidate = (error as { code?: unknown } | null)?.code;
+  if (typeof candidate === "string" && /^(?:E_|ERR_)[A-Z0-9_]+$/.test(candidate)) {
+    return candidate;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const chromium = CHROMIUM_ERROR_PATTERN.exec(message);
+  if (chromium) return chromium[1];
+  const demo = CODE_PATTERN.exec(message);
+  if (demo) return demo[1];
+  return "E_RECORDER_FAILED";
+}

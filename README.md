@@ -21,7 +21,8 @@ agents can drive isolated browser sessions at the same time.
   declared in `package.json`, so a mismatch surfaces during install (yarn fails;
   npm/pnpm print an EBADENGINE warning and fail under `engine-strict`) instead of deep
   inside vite/vitest.
-- ffmpeg and ffprobe on `PATH`; missing binaries exit with code 3.
+- ffmpeg and ffprobe on `PATH` (resolved from `PATH` first, then the Homebrew/local
+  fallback directories); missing binaries exit with code 3.
 - macOS for the verified path: window modes and recording are tested there, and hidden
   mode uses the accessory activation policy.
 - Python 3 only for the bundled fixture static server (`python3 -m http.server`).
@@ -269,8 +270,10 @@ its video and its failed evidence.
 "Failure also has evidence" holds for every entry point:
 
 - `--mode=record` writes `<out>/<label>.evidence.json` with `status: "failed"`,
-  `video: null` and `error.message` whenever the run throws before the video is encoded
-  (capture, step or encoding failure).
+  `video: null`, `error.code`, `error.message` and the failing `error.step` whenever the
+  run throws before the video is encoded — opening the stage (for example an unreachable
+  page, reported as `ERR_CONNECTION_REFUSED`), capture, step or encoding failure.
+  `artifacts` lists any partial files that were written before the failure.
 - app mode (`--autorun`, control API, IPC) writes the take's `take-01.evidence.json`
   with `status: "failed"`, `video: null`, `error.code` and `error.message` when the
   recorder fails before encoding — including the zero-frame case

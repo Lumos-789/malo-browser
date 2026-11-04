@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.4
+
+- `--mode=record` now leaves failed evidence for every pre-encode throw, including
+  opening the stage. An unreachable page writes `<out>/<label>.evidence.json` with
+  `status: "failed"`, `video: null`, the real Chromium code (`ERR_CONNECTION_REFUSED`),
+  the failing `error.step`, the steps captured so far and any partial `artifacts`; the
+  original error and exit code 2 are unchanged. Covered by
+  `tests/unit/phase0-failed-evidence.test.ts`.
+- `resolveTool` keeps resolving `ffmpeg`/`ffprobe` from `PATH` first and only then from
+  the documented Homebrew/local directories; a real miss now throws a typed
+  `DemoError` (`E_FFMPEG_MISSING`, exit 3) and the policy is unit-tested via
+  `resolveToolOnPath`.
+
 ## 0.1.3
 
 - Removed `docs/phase0-report.md`, `docs/phase1.md`, `docs/phase1b.md`: internal

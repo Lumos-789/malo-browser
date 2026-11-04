@@ -19,7 +19,8 @@ Stage（给观众看）和 Recorder（固定规格录制），不 fork 浏览器
   `package.json`，版本不满足时包管理器在安装阶段就给出明确提示（yarn 直接失败；
   npm / pnpm 默认打印 EBADENGINE 警告、`engine-strict` 下失败），不会拖到
   vite / vitest 深处才炸出难懂的错误。
-- `PATH` 上有 ffmpeg 与 ffprobe；缺失时以退出码 3 结束。
+- `PATH` 上有 ffmpeg 与 ffprobe（先查 `PATH`，再回退到 Homebrew / 本地安装目录）；
+  缺失时以退出码 3 结束。
 - macOS 是已验证路径：窗口模式与录制在 macOS 上实测，隐藏模式使用 accessory 激活策略。
 - Python 3 仅用于起内置 fixture 静态服务（`python3 -m http.server`）。
 - git。
@@ -247,9 +248,10 @@ take 仍保留视频与失败 evidence。
 
 「失败也有证据」对所有入口成立：
 
-- `--mode=record` 在视频编码之前抛错（采帧、步骤或编码失败）时，写
-  `<out>/<label>.evidence.json`，含 `status: "failed"`、`video: null` 与
-  `error.message`。
+- `--mode=record` 在视频编码之前抛错时，写 `<out>/<label>.evidence.json`，含
+  `status: "failed"`、`video: null`、`error.code`、`error.message` 与失败步骤
+  `error.step`；覆盖打开舞台（例如页面不可达，记为 `ERR_CONNECTION_REFUSED`）、采帧、
+  步骤与编码失败。失败前已写出的部分产物列在 `artifacts` 里。
 - app 模式（autorun、控制 API、IPC）在录制器编码之前失败时，写该 take 的
   `take-01.evidence.json`，含 `status: "failed"`、`video: null`、`error.code` 与
   `error.message`——包括 0 帧的 `E_RECORDER_NO_FRAMES`——随后继续抛原始错误，所以退出码

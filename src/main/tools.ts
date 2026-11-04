@@ -1,18 +1,21 @@
 import { accessSync, constants, existsSync } from "node:fs";
 import { execFile, spawn } from "node:child_process";
+import path from "node:path";
 import { promisify } from "node:util";
+import { DemoError } from "../shared/errors";
 
 const execFileAsync = promisify(execFile);
 
-export function resolveTool(name: "ffmpeg" | "ffprobe"): string {
-  const dirs = [
-    ...(process.env.PATH ?? "").split(":"),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    "/usr/bin",
-  ].filter(Boolean);
+const FALLBACK_TOOL_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] as const;
+
+export function resolveToolOnPath(
+  name: "ffmpeg" | "ffprobe",
+  pathValue: string | undefined,
+  fallbackDirs: readonly string[] = FALLBACK_TOOL_DIRS,
+): string {
+  const dirs = [...(pathValue ?? "").split(path.delimiter), ...fallbackDirs].filter(Boolean);
   for (const dir of dirs) {
-    const candidate = `${dir}/${name}`;
+    const candidate = path.join(dir, name);
     if (!existsSync(candidate)) continue;
     try {
       accessSync(candidate, constants.X_OK);
@@ -21,7 +24,13 @@ export function resolveTool(name: "ffmpeg" | "ffprobe"): string {
       continue;
     }
   }
-  throw new Error(`E_FFMPEG_MISSING: 找不到 ${name}，请先安装 ffmpeg`);
+  throw new DemoError("E_FFMPEG_MISSING", `找不到 ${name}，请先安装 ffmpeg`, {
+    details: { tool: name, path: pathValue ?? "", fallback_dirs: [...fallbackDirs] },
+  });
+}
+
+export function resolveTool(name: "ffmpeg" | "ffprobe"): string {
+  return resolveToolOnPath(name, process.env.PATH);
 }
 
 export async function runTool(bin: string, args: string[]): Promise<{ stdout: string; stderr: string }> {

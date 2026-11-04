@@ -1,6 +1,6 @@
 {
   "name": "malo-browser",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Scripted browser demo tool: scene-driven Electron stage for live web demos, headless 1080p30 recording with evidence files, director console and loopback control API. The bundled skill guides your agent through cloning, installing, running scenes and troubleshooting.",
   "description_i18n": {
     "en": "Scripted browser demo tool: scene-driven Electron stage for live web demos, headless 1080p30 recording with evidence files, director console and loopback control API. The bundled skill guides your agent through cloning, installing, running scenes and troubleshooting.",
