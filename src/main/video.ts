@@ -136,8 +136,16 @@ export async function probeVideo(file: string): Promise<VideoProbe> {
   };
 }
 
+/** A full-file decode needs headroom scaled by the video length. */
+function decodeTimeoutMs(durationS: number): number {
+  return Math.max(120_000, Math.ceil(durationS * 5_000));
+}
+
 export async function blackReport(file: string): Promise<{ blackSeconds: number; ratio: number; durationS: number }> {
   const ffmpeg = resolveTool("ffmpeg");
+  // Probe first so the blackdetect pass can be given a timeout proportional to
+  // the take instead of a flat cap that would fail a long, perfectly good video.
+  const probe = await probeVideo(file);
   const { stderr } = await runTool(ffmpeg, [
     "-v",
     "info",
@@ -150,8 +158,7 @@ export async function blackReport(file: string): Promise<{ blackSeconds: number;
     "-f",
     "null",
     "-",
-  ]);
-  const probe = await probeVideo(file);
+  ], decodeTimeoutMs(probe.durationS));
   let blackSeconds = 0;
   const pattern = /black_start:[\d.]+ black_end:[\d.]+ black_duration:([\d.]+)/g;
   for (const match of stderr.matchAll(pattern)) {
@@ -187,7 +194,11 @@ export async function ssim(a: string, b: string, seconds: number): Promise<numbe
   const filter =
     `[0:v]trim=0:${seconds},setpts=PTS-STARTPTS[x];` +
     `[1:v]trim=0:${seconds},setpts=PTS-STARTPTS[y];[x][y]ssim`;
-  const { stderr } = await runTool(ffmpeg, ["-v", "info", "-hide_banner", "-i", a, "-i", b, "-lavfi", filter, "-f", "null", "-"]);
+  const { stderr } = await runTool(
+    ffmpeg,
+    ["-v", "info", "-hide_banner", "-i", a, "-i", b, "-lavfi", filter, "-f", "null", "-"],
+    decodeTimeoutMs(seconds),
+  );
   const hit = stderr.match(/All:([\d.]+)/);
   if (!hit) throw new Error(`SSIM 解析失败：${stderr.split("\n").slice(-3).join(" | ")}`);
   return Number(hit[1]);

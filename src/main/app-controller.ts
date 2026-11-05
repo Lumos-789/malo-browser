@@ -549,6 +549,11 @@ export class AppController {
 
   async recordStart(output?: string): Promise<void> {
     if (!this.stage || !this.scene) throw new DemoError("E_SCENE_NOT_FOUND", "还没有加载场景");
+    // The stage/scene are bound before the first await, so a slow load would
+    // otherwise let a recording start on a half-initialised page.
+    if (this.snap.run.status === "loading") {
+      throw new DemoError("E_UNSUPPORTED", "场景仍在加载，加载完成后再开始录制");
+    }
     const target = output ?? recordingPath(this.options.outputRoot, this.scene.id, new Date());
     const recorder = new ScreencastRecorder({
       webContents: this.stage.view.webContents.debugger,

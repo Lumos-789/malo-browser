@@ -308,29 +308,39 @@ describe("interpolateScene", () => {
     const raw = baseScene();
     raw.vars = {
       user: "demo",
-      greeting: "Hello ${user} ${env:GREETING_TARGET}",
+      greeting: "Hello ${user} ${env:SCENE_GREETING_TARGET}",
     };
     raw.steps = [
       { action: "wait", seconds: 1, note: "logged in as ${user}" },
     ];
     const scene = parseBase(raw);
-    const resolved = interpolateScene(scene, { GREETING_TARGET: "world" });
+    const resolved = interpolateScene(scene, { SCENE_GREETING_TARGET: "world" });
 
     expect(resolved.vars.greeting).toBe("Hello demo world");
     expect(resolved.steps[0].note).toBe("logged in as demo");
     expect(scene.vars.greeting).toBe(
-      "Hello ${user} ${env:GREETING_TARGET}",
+      "Hello ${user} ${env:SCENE_GREETING_TARGET}",
     );
   });
 
   it("fails loudly when an environment variable is missing", () => {
     const raw = baseScene();
-    raw.vars = { demo_password: "${env:DEMO_PASSWORD_MISSING}" };
+    raw.vars = { demo_password: "${env:SCENE_DEMO_PASSWORD}" };
     const scene = parseBase(raw);
 
     const error = captureError(() => interpolateScene(scene, {}));
     expect(error.code).toBe("E_SCENE_INVALID");
-    expect(error.message).toContain("DEMO_PASSWORD_MISSING");
+    expect(error.message).toContain("SCENE_DEMO_PASSWORD");
+  });
+
+  it("refuses environment names outside the SCENE_ namespace", () => {
+    const raw = baseScene();
+    raw.vars = { leaked: "${env:AWS_SECRET_ACCESS_KEY}" };
+    const scene = parseBase(raw);
+
+    const error = captureError(() => interpolateScene(scene, { AWS_SECRET_ACCESS_KEY: "x" }));
+    expect(error.code).toBe("E_SCENE_INVALID");
+    expect(error.message).toContain("SCENE_");
   });
 
   it("fails loudly on unknown variables and cycles", () => {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { DemoError } from "../../shared/errors";
 import type { Scene } from "../../shared/scene";
+import { sceneEnvFrom } from "./env";
 
 const PLACEHOLDER = /\$\{([^}]+)\}/g;
 
@@ -45,14 +46,14 @@ export function interpolateScene(
         if (name.length === 0) {
           throw interpolateError(scene, "Empty environment variable name");
         }
-        const value = env[name];
-        if (value === undefined) {
+        try {
+          return sceneEnvFrom(name, env);
+        } catch (error) {
           throw interpolateError(
             scene,
-            `Missing environment variable "${name}"`,
+            error instanceof Error ? error.message : String(error),
           );
         }
-        return value;
       }
       return resolveVariable(token, stack);
     });

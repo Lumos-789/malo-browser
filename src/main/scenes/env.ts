@@ -8,7 +8,7 @@ import { DemoError } from "../../shared/errors";
  */
 export const SCENE_ENV_PREFIX = "SCENE_";
 
-export function sceneEnvValue(name: string): string {
+export function assertSceneEnvName(name: string): void {
   if (!name.startsWith(SCENE_ENV_PREFIX)) {
     throw new DemoError(
       "E_SCENE_INVALID",
@@ -16,11 +16,28 @@ export function sceneEnvValue(name: string): string {
       { details: { variable: name, prefix: SCENE_ENV_PREFIX } },
     );
   }
-  const value = process.env[name];
+}
+
+function requireValue(name: string, value: string | undefined): string {
   if (value === undefined || value === "") {
     throw new DemoError("E_SCENE_INVALID", `环境变量缺失：${name}`, {
       details: { variable: name },
     });
   }
   return value;
+}
+
+/** Reads `name` from process.env, enforcing the SCENE_ namespace. */
+export function sceneEnvValue(name: string): string {
+  assertSceneEnvName(name);
+  return requireValue(name, process.env[name]);
+}
+
+/** Same rule, but against a caller-supplied env map (used by the scene interpolator). */
+export function sceneEnvFrom(
+  name: string,
+  env: Record<string, string | undefined>,
+): string {
+  assertSceneEnvName(name);
+  return requireValue(name, env[name]);
 }

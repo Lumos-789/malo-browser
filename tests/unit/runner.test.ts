@@ -107,9 +107,11 @@ class FakeOverlay implements OverlayPort {
   clears = 0;
   injects = 0;
   failHighlight = false;
+  failInject = false;
 
   async inject(): Promise<void> {
     this.injects += 1;
+    if (this.failInject) throw new Error("E_STEP_TIMEOUT: execution context was destroyed");
   }
 
   async move(point: Point): Promise<void> {
@@ -630,5 +632,26 @@ describe("Runner", () => {
       .filter((event): event is Extract<RunnerEvent, { type: "run.paused" }> => event.type === "run.paused")
       .at(-1);
     expect(paused).toMatchObject({ stepIndex: 0, reloaded: false });
+  });
+
+  it("keeps a goto successful when the overlay cannot be injected", async () => {
+    const driver = new FakeDriver();
+    const overlay = new FakeOverlay();
+    overlay.failInject = true;
+    const runner = new Runner({
+      driver,
+      overlay,
+      screenshotDir: SHOT_DIR,
+      assertNavigationAllowed: () => undefined,
+    });
+
+    await runner.load(makeScene([{ id: "next", action: "goto", url: "http://demo.test/next" }]));
+    const snapshot = await runner.start("rehearse");
+
+    // A landing page that redirects again tears the execution context down
+    // mid-inject; the overlay is cosmetic, so the step must still pass.
+    expect(snapshot.status).toBe("done");
+    expect(driver.navigations).toContain("http://demo.test/next");
+    expect(overlay.injects).toBeGreaterThan(0);
   });
 });

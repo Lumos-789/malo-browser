@@ -22,7 +22,8 @@ Full review pass; every item below was reproduced before fixing.
   host policy first (`assertNavigationAllowed`).
 - **`${env:NAME}` is limited to `SCENE_*`.** A third-party scene could interpolate any
   `process.env` value (cloud keys, tokens) into a URL or form field, and the allowlist
-  was declared by that same scene.
+  was declared by that same scene. All three interpolation implementations share the
+  same rule now (the third one, `interpolateScene`, had no guard at all).
 - **`demo://` validates the scene id.** The protocol handler used the URL segment as the
   containment root, so `demo://scene/..%2Fprivate%2Fcredential.json` served files one
   level above the scenes root. It now applies `SCENE_ID_PATTERN`, and a 404 no longer
@@ -40,8 +41,11 @@ Full review pass; every item below was reproduced before fixing.
   on disk: the failed-evidence warning names the file and says it failed self-checks.
 - Frame temp dirs (`<take>-frames`, `<take>-seq`) are cleaned even when encoding is
   rejected, so a failed take stops leaving hundreds of JPEGs behind.
-- `ffmpeg` / `ffprobe` now run with timeouts (120s probe, 250ms/frame encode, 20min
-  ceiling) and are killed instead of hanging `stop()` forever.
+- `ffmpeg` / `ffprobe` now run with timeouts (120s metadata probe, 250ms/frame encode,
+  20min ceiling) and are killed instead of hanging `stop()` forever. Whole-file decode
+  passes (blackdetect, ssim) scale their timeout with the video length, so a long take
+  is not failed by a flat cap; a buffer overflow reports itself instead of posing as a
+  timeout.
 - `capture.timeline_frames` reports the encoder's slot count instead of duplicating
   `video.frames`.
 - The `steps_completed` / `steps_within_take` checks only consider steps executed inside
@@ -56,8 +60,11 @@ Full review pass; every item below was reproduced before fixing.
   surface the error in the UI.
 - **`goto` / `login` no longer break every later visual step.** Navigation drops the
   injected overlay, and only load/switch re-injected it, so `goto` → `click` failed with
-  `TypeError: … reading 'click'`. The overlay is now installed on demand and re-injected
-  after navigation; `reset` / `stop` / `prev` recover too.
+  `TypeError: … reading 'click'`. The overlay is now installed on demand (and re-injected
+  after navigation as a best-effort step, so a landing page that redirects again cannot
+  fail the take); `reset` / `stop` / `prev` recover too.
+- `recorder.start` refuses while a scene is still loading instead of recording a
+  half-initialised page.
 - `runner.load()` is awaited, removing the load/start race that surfaced as
   "场景尚未就绪" on slow or redirected scenes.
 - A failed `scene.load` no longer leaks an untracked `BaseWindow`.
@@ -109,7 +116,7 @@ Full review pass; every item below was reproduced before fixing.
   is gitignored); `scripts/pack-dsh-bundle.sh` stages the same two directories.
 - `package-lock.json` root version caught up with `package.json`.
 
-Tests: 232 → 252.
+Tests: 232 → 254.
 
 ## 0.1.5
 

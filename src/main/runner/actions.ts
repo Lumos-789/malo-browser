@@ -128,7 +128,10 @@ async function goto(context: ActionContext): Promise<ActionResult> {
   context.assertNavigationAllowed?.(url);
   await context.driver.navigate(url, { timeoutMs: context.timeoutMs });
   // Navigation replaced the document, taking the injected overlay with it.
-  await context.overlay.inject();
+  // Best effort only: a landing page that redirects again tears the execution
+  // context down mid-inject, and the overlay is cosmetic (ElectronOverlay
+  // re-injects on demand before the next visual op).
+  await context.overlay.inject().catch(() => undefined);
   return { detail: `navigated to ${url}` };
 }
 
@@ -142,7 +145,7 @@ async function login(context: ActionContext): Promise<ActionResult> {
     timeoutMs: context.timeoutMs,
   });
   // login navigates to the login page, so the overlay is gone afterwards.
-  await context.overlay.inject();
+  await context.overlay.inject().catch(() => undefined);
   return result;
 }
 

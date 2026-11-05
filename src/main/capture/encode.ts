@@ -114,18 +114,24 @@ async function runProcess(
   bin: string,
   args: string[],
   details: Record<string, unknown> = {},
+  timeoutMs: number = PROBE_TIMEOUT_MS,
 ): Promise<{ stdout: string; stderr: string }> {
   try {
     const result = await execFileAsync(bin, args, {
       maxBuffer: 64 * 1024 * 1024,
-      timeout: PROBE_TIMEOUT_MS,
+      timeout: timeoutMs,
       killSignal: "SIGKILL",
     });
     return { stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
     const err = error as NodeJS.ErrnoException & { stderr?: string; killed?: boolean; signal?: string };
+    if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      throw new DemoError("E_FFMPEG_FAILED", `${path.basename(bin)} 输出超过缓冲区上限`, {
+        details: { ...details, tool: bin },
+      });
+    }
     if (err.killed || err.signal) {
-      throw new DemoError("E_FFMPEG_FAILED", `${path.basename(bin)} 执行超时（${PROBE_TIMEOUT_MS}ms）已被终止`, {
+      throw new DemoError("E_FFMPEG_FAILED", `${path.basename(bin)} 执行超时或被终止（上限 ${timeoutMs}ms）`, {
         details: { ...details, tool: bin },
       });
     }
@@ -299,7 +305,16 @@ export async function probeVideo(file: string, tools?: Partial<ToolPaths>): Prom
   return { width, height, fps, durationS, frames };
 }
 
-async function blackSecondsOf(file: string, tools?: Partial<ToolPaths>): Promise<number> {
+/** blackdetect decodes the whole file; 5s of wall clock per video second is ample. */
+function decodeTimeoutMs(durationS: number): number {
+  return Math.max(PROBE_TIMEOUT_MS, Math.ceil(durationS * 5_000));
+}
+
+async function blackSecondsOf(
+  file: string,
+  tools?: Partial<ToolPaths>,
+  timeoutMs: number = PROBE_TIMEOUT_MS,
+): Promise<number> {
   const { stderr } = await runProcess(
     resolveTool("ffmpeg", tools),
     [
@@ -316,6 +331,7 @@ async function blackSecondsOf(file: string, tools?: Partial<ToolPaths>): Promise
       "-",
     ],
     { file },
+    timeoutMs,
   );
   let blackSeconds = 0;
   const pattern = /black_start:[\d.]+ black_end:[\d.]+ black_duration:([\d.]+)/g;
@@ -326,10 +342,8 @@ async function blackSecondsOf(file: string, tools?: Partial<ToolPaths>): Promise
 }
 
 export async function blackReport(file: string, tools?: Partial<ToolPaths>): Promise<BlackReport> {
-  const [probe, blackSeconds] = await Promise.all([
-    probeVideo(file, tools),
-    blackSecondsOf(file, tools),
-  ]);
+  const probe = await probeVideo(file, tools);
+  const blackSeconds = await blackSecondsOf(file, tools, decodeTimeoutMs(probe.durationS));
   return {
     blackSeconds,
     ratio: probe.durationS > 0 ? blackSeconds / probe.durationS : 1,
@@ -342,9 +356,10 @@ export async function verifyVideo(options: VerifyVideoOptions): Promise<Verified
     throw new DemoError("E_EVIDENCE_MISMATCH", `期望时长无效：${options.expectedDurationS}`);
   }
 
+  const decodeTimeout = decodeTimeoutMs(options.expectedDurationS);
   const [probe, blackSeconds] = await Promise.all([
     probeVideo(options.file, options.tools),
-    blackSecondsOf(options.file, options.tools),
+    blackSecondsOf(options.file, options.tools, decodeTimeout),
   ]);
   const black: BlackReport = {
     blackSeconds,

@@ -45,9 +45,18 @@ export async function runTool(
       killSignal: "SIGKILL",
     });
   } catch (error) {
-    const err = error as { stderr?: string; message: string; killed?: boolean; signal?: string };
+    const err = error as {
+      stderr?: string;
+      message: string;
+      killed?: boolean;
+      signal?: string;
+      code?: string;
+    };
+    if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      throw new Error(`${bin} 输出超过缓冲区上限`);
+    }
     if (err.killed || err.signal) {
-      throw new Error(`${bin} 执行超时（${timeoutMs}ms）已被终止`);
+      throw new Error(`${bin} 执行超时或被终止（上限 ${timeoutMs}ms）`);
     }
     throw new Error(`${bin} 执行失败：${(err.stderr ?? err.message).trim().split("\n").slice(-4).join(" | ")}`);
   }
@@ -74,7 +83,7 @@ export function runToolWithProgress(
     };
     // A hung encoder must not hang stop(): kill it and fail with a real reason.
     timer = setTimeout(() => {
-      fail(new Error(`${bin} 执行超时（${timeoutMs}ms）已被终止`));
+      fail(new Error(`${bin} 执行超时或被终止（上限 ${timeoutMs}ms）`));
       child.kill("SIGKILL");
     }, timeoutMs);
     timer.unref();
