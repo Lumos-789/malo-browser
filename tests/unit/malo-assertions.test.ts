@@ -13,6 +13,7 @@ function state(overrides: Partial<MaloAssertState> = {}): MaloAssertState {
     hidden_visible: null,
     text: null,
     value: null,
+    value_redacted: false,
     count: null,
     invalid_selector: null,
     ...overrides,

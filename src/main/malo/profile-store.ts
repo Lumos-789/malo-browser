@@ -139,8 +139,10 @@ export class ProfileStore {
 
   private persist(): Promise<void> {
     const payload = `${JSON.stringify(this.data, null, 2)}\n`;
-    this.writeChain = this.writeChain.then(async () => {
-      await mkdir(path.dirname(this.file), { recursive: true });
+    // A failed write must not poison the chain: the caller of that write still
+    // sees the rejection, and the next write starts from a settled chain.
+    this.writeChain = this.writeChain.catch(() => undefined).then(async () => {
+      await mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
       const temp = `${this.file}.tmp`;
       await writeFile(temp, payload, { mode: 0o600 });
       await rename(temp, this.file);

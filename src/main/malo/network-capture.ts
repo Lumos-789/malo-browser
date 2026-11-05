@@ -104,6 +104,9 @@ export class NetworkCapture {
         try {
           await this.transport.send("Network.disable");
         } catch (error) {
+          // Treat the domain as off so a later subscribe retries Network.enable
+          // instead of being stuck behind a stale failure forever.
+          this.enabled = false;
           this.failure = `Network.disable 失败：${messageOf(error)}`;
           throw captureUnavailable(this.failure);
         }
@@ -158,7 +161,10 @@ export class NetworkCapture {
   }
 
   private async enable(): Promise<void> {
-    if (this.enabled) return;
+    if (this.enabled) {
+      this.failure = null;
+      return;
+    }
     if (this.enabling === null) {
       this.enabling = this.enableNow().finally(() => {
         this.enabling = null;

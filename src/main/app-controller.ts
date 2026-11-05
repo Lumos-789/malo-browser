@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { stat } from "node:fs/promises";
 import { app, screen, type Session } from "electron";
 import path from "node:path";
 import type { Scene } from "../shared/scene";
@@ -9,7 +10,7 @@ import type {
   StepRecord,
   WindowMode,
 } from "../shared/types";
-import { DemoError, isDemoError, stripErrorCode } from "../shared/errors";
+import { DemoError, isDemoError, stripErrorCode, type ErrorCode } from "../shared/errors";
 import { loadScene, listScenes, scriptSha256 } from "./scenes";
 import { Runner } from "./runner";
 import { ElectronOverlay } from "./electron-overlay";
@@ -86,6 +87,8 @@ export class AppController {
   /** Policy consulted by the long-lived permission/download/navigation handlers. */
   private currentPolicy: SecurityPolicy = DENY_ALL_POLICY;
   private currentStagePlan: StagePlan | null = null;
+  /** Set when a navigation was refused, so the aborted loadURL can be explained. */
+  private blockedNavigation: { url: string; reason: string } | null = null;
   private readonly wiredSessions = new WeakSet<Session>();
   private recordingScene: Scene | null = null;
   private runSceneIds: string[] = [];
@@ -171,86 +174,133 @@ export class AppController {
       height: plan.height,
       showMode: this.options.windowMode,
     });
+    // Track the stage before the first await so a failed load cannot leak a
+    // window and runner events fired during load can see a live stage.
+    this.stage = stage;
     this.currentPolicy = plan.policy;
     this.currentStagePlan = plan;
     this.wireStageSession(stage);
-    stage.view.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    stage.view.webContents.on("will-navigate", (event, target) => {
-      const verdict = isAllowedNavigation(target, this.currentPolicy.allow);
-      if (process.env.DEMO_DEBUG) {
-        console.error(`[malo-browser] will-navigate ${target} allowed=${verdict.allowed} (${verdict.reason})`);
-      }
-      if (verdict.allowed) return;
-      event.preventDefault();
-      this.snap.error = {
-        code: "E_NAV_BLOCKED",
-        message: `导航被拦截：${target}（${verdict.reason}）`,
-        stepIndex: null,
-        screenshotPath: null,
-      };
-      this.emit({ type: "app.error", code: "E_NAV_BLOCKED", message: verdict.reason });
+    const webContents = stage.view.webContents;
+    webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    webContents.on("will-navigate", (event, target) => this.gateNavigation(event, target));
+    // Server-side 3xx does not emit will-navigate; without this the allowlist
+    // could be escaped by a redirect from an allowed origin.
+    webContents.on("will-redirect", (event, target) => this.gateNavigation(event, target));
+    webContents.on("did-navigate", (_event, target) => {
+      if (this.stage !== stage) return;
+      this.blockedNavigation = null;
+      this.snap.stage.url = target;
       this.publish();
     });
-    const driver = new ElectronPageDriver(stage.view.webContents);
-    const url = plan.url;
-    debug(`navigating ${url}`);
-    await driver.navigate(url);
-    debug("navigated");
-    await driver.attach();
-    debug("cdp attached");
-    await driver.waitForSelector("body", "attached", 15000).catch(() => undefined);
-
-    const overlay = new ElectronOverlay(driver);
-    await overlay.inject();
-    debug("overlay injected");
-
-    const runner = new Runner({
-      driver,
-      overlay,
-      screenshotDir: path.join(this.options.outputRoot, "errors", scene.id),
-      resolveScene: (nextSceneId: string) => loadScene(this.options.scenesRoot, nextSceneId),
-      // Policy must flip before the new page starts navigating, otherwise a
-      // redirect on load would be judged against the previous scene's allowlist.
-      onSceneWillInstall: (next) => {
-        this.currentPolicy = buildStagePlan(next).policy;
-      },
-      onEvent: (event: AppEvent) => {
-        this.syncFromRunner();
-        // Steps of earlier scenes disappear from the runner snapshot on switch;
-        // keep them so evidence reflects everything the take actually executed.
-        if (
-          (event.type === "step.completed" || event.type === "step.failed") &&
-          this.runner
-        ) {
-          const record = this.runner.snapshot().steps[event.index];
-          if (record) this.takeSteps.push({ ...record, index: this.takeSteps.length });
-        }
-        this.emit(event);
-        // Runner events arrive synchronously; stage re-layout must not block them.
-        if (event.type === "scene.ready") this.scheduleStageSync(event.sceneId, event.url);
-      },
-    });
-    runner.load(scene);
-
-    this.stage = stage;
+    const driver = new ElectronPageDriver(webContents);
     this.driver = driver;
-    this.overlay = overlay;
-    this.runner = runner;
-    this.scene = scene;
+    const url = plan.url;
+    this.blockedNavigation = null;
+    try {
+      debug(`navigating ${url}`);
+      await driver.navigate(url);
+      debug("navigated");
+      await driver.attach();
+      debug("cdp attached");
+      await driver.waitForSelector("body", "attached", 15000).catch(() => undefined);
 
-    const viewport = await driver.evaluate<{ width: number; height: number; dpr: number }>(
-      "({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio })",
+      const overlay = new ElectronOverlay(driver);
+      this.overlay = overlay;
+      await overlay.inject();
+      debug("overlay injected");
+
+      const runner = new Runner({
+        driver,
+        overlay,
+        screenshotDir: path.join(this.options.outputRoot, "errors", scene.id),
+        resolveScene: (nextSceneId: string) => loadScene(this.options.scenesRoot, nextSceneId),
+        // Policy must flip before the new page starts navigating, otherwise a
+        // redirect on load would be judged against the previous scene's allowlist.
+        onSceneWillInstall: (next) => {
+          this.currentPolicy = buildStagePlan(next).policy;
+        },
+        assertNavigationAllowed: (target) => this.assertNavigationAllowed(target),
+        onEvent: (event: AppEvent) => {
+          this.syncFromRunner();
+          // Steps of earlier scenes disappear from the runner snapshot on switch;
+          // keep them so evidence reflects everything the take actually executed.
+          if (
+            (event.type === "step.completed" || event.type === "step.failed") &&
+            this.runner
+          ) {
+            const record = this.runner.snapshot().steps[event.index];
+            if (record) this.takeSteps.push({ ...record, index: this.takeSteps.length });
+          }
+          this.emit(event);
+          // Runner events arrive synchronously; stage re-layout must not block them.
+          if (event.type === "scene.ready") this.scheduleStageSync(event.sceneId, event.url);
+        },
+      });
+      this.runner = runner;
+      this.scene = scene;
+      // Awaited: start() must not race a still-loading runner ("场景尚未就绪").
+      await runner.load(scene);
+
+      const viewport = await driver.evaluate<{ width: number; height: number; dpr: number }>(
+        "({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio })",
+      );
+      this.snap.stage.url = url;
+      this.snap.stage.visible = this.options.windowMode !== "hidden";
+      this.snap.stage.viewport = viewport;
+      this.snap.stage.blackout = false;
+      this.snap.run.status = "ready";
+      this.snap.run.stepTotal = scene.steps.length;
+      this.snap.run.stepIndex = 0;
+      this.snap.run.steps = runner.snapshot().steps as StepRecord[];
+      this.snap.error = null;
+      this.emit({ type: "scene.ready", sceneId: scene.id, url });
+      this.publish();
+    } catch (error) {
+      const blocked = this.blockedNavigation as { url: string; reason: string } | null;
+      this.snap.stage.sceneId = null;
+      this.snap.stage.title = "";
+      this.snap.stage.url = "";
+      this.snap.run = {
+        ...this.snap.run,
+        status: "failed",
+        steps: [],
+        stepTotal: 0,
+        stepIndex: 0,
+      };
+      this.teardownStage();
+      // A refused navigation aborts loadURL (ERR_ABORTED / ERR_FAILED depending
+      // on where it was stopped); report the policy reason, not an internal error.
+      if (blocked !== null && !isDemoError(error)) {
+        throw new DemoError("E_NAV_BLOCKED", `导航被拦截：${blocked.url}（${blocked.reason}）`, {
+          url: blocked.url,
+          sceneId: scene.id,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private gateNavigation(event: { preventDefault(): void }, target: string): void {
+    const verdict = isAllowedNavigation(target, this.currentPolicy.allow);
+    if (process.env.DEMO_DEBUG) {
+      console.error(
+        `[malo-browser] navigation ${target} allowed=${verdict.allowed} (${verdict.reason})`,
+      );
+    }
+    if (verdict.allowed) return;
+    event.preventDefault();
+    this.blockedNavigation = { url: target, reason: verdict.reason };
+    this.reportError(
+      new DemoError("E_NAV_BLOCKED", `导航被拦截：${target}（${verdict.reason}）`),
     );
-    this.snap.stage.url = url;
-    this.snap.stage.visible = this.options.windowMode !== "hidden";
-    this.snap.stage.viewport = viewport;
-    this.snap.run.status = "ready";
-    this.snap.run.stepTotal = scene.steps.length;
-    this.snap.run.stepIndex = 0;
-    this.snap.run.steps = runner.snapshot().steps as StepRecord[];
-    this.snap.error = null;
-    this.emit({ type: "scene.ready", sceneId: scene.id, url });
-    this.publish();
+  }
+
+  private assertNavigationAllowed(target: string): void {
+    const verdict = isAllowedNavigation(target, this.currentPolicy.allow);
+    if (verdict.allowed) return;
+    throw new DemoError("E_NAV_BLOCKED", `导航被拦截：${target}（${verdict.reason}）`, {
+      url: target,
+    });
   }
 
   /**
@@ -286,12 +336,27 @@ export class AppController {
     try {
       await this.applySceneSwitch(sceneId, url);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const code = isDemoError(error) ? error.code : "E_STAGE_LAYOUT";
-      this.snap.error = { code, message, stepIndex: null, screenshotPath: null };
-      this.emit({ type: "app.error", code, message });
-      this.publish();
+      this.reportError(error, "E_STAGE_LAYOUT");
     }
+  }
+
+  /**
+   * Single place that turns a thrown error into visible state. Every entry
+   * point (IPC, shortcuts, control API) must use it so a rejection never
+   * escapes to the process-level unhandledRejection handler.
+   */
+  reportError(error: unknown, fallbackCode: ErrorCode = "E_UNSUPPORTED"): void {
+    const code = isDemoError(error) ? error.code : fallbackCode;
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const message = stripErrorCode(code, rawMessage);
+    this.snap.error = {
+      code,
+      message,
+      stepIndex: (isDemoError(error) ? error.stepIndex : null) ?? null,
+      screenshotPath: (isDemoError(error) ? error.screenshotPath : null) ?? null,
+    };
+    this.emit({ type: "app.error", code, message });
+    this.publish();
   }
 
   /**
@@ -322,8 +387,13 @@ export class AppController {
     this.snap.stage.sceneId = scene.id;
     this.snap.stage.title = scene.title;
     this.snap.stage.url = url;
-    this.snap.stage.blackout = false;
     if (!this.overlay) throw new DemoError("E_STAGE_LAYOUT", `场景切换时 overlay 不可用：${sceneId}`);
+    // A `scene` step can point at the same URL, in which case the page is never
+    // reloaded and the black overlay would otherwise survive the switch.
+    if (this.snap.stage.blackout) {
+      await this.overlay.blackout(false);
+    }
+    this.snap.stage.blackout = false;
     await this.overlay.inject();
     await this.syncViewport();
     if (this.recorder) this.runSceneIds = recordSceneVisit(this.runSceneIds, scene.id);
@@ -397,6 +467,7 @@ export class AppController {
   async reset(): Promise<void> {
     await this.requireRunner().reset();
     await this.overlay?.clear();
+    this.snap.stage.blackout = false;
     this.syncFromRunner();
     this.publish();
   }
@@ -419,6 +490,11 @@ export class AppController {
     this.stage.setFullscreen(on);
     await waitForStageState(this.stage, on ? "enter-full-screen" : "leave-full-screen", 3000);
     this.snap.stage.fullscreen = on;
+    // Fullscreen skips the scene resize; restoring windowed mode must re-apply
+    // the active scene's declared viewport instead of the pre-fullscreen one.
+    if (!on && this.currentStagePlan) {
+      this.stage.resize(this.currentStagePlan.width, this.currentStagePlan.height);
+    }
     await this.syncViewport();
     this.emit({
       type: "stage.layout",
@@ -543,10 +619,18 @@ export class AppController {
       throw error;
     }
     const elapsedMs = Math.round(summary.durationS * 1000);
-    const startedAt = this.snap.run.startedAt ?? new Date(Date.now() - elapsedMs).toISOString();
+    // Describe the take's own window: `run.startedAt` is when the run started,
+    // which can be minutes before recording began.
+    const startedAt =
+      recordingStartedAtMs !== null
+        ? new Date(recordingStartedAtMs).toISOString()
+        : (this.snap.run.startedAt ?? new Date(Date.now() - elapsedMs).toISOString());
     const endedAt = new Date(Date.parse(startedAt) + elapsedMs).toISOString();
+    // Checks may only consider steps executed inside this take; borrowing the
+    // whole scene's step list would report steps that are not in the video.
+    const checkSteps = takeSteps;
     const recordedSteps = takeSteps.length > 0 ? takeSteps : this.snap.run.steps;
-    const stepsMs = recordedSteps.reduce((sum, step) => sum + (step.durationMs ?? 0), 0);
+    const stepsMs = checkSteps.reduce((sum, step) => sum + (step.durationMs ?? 0), 0);
     const evidencePath = summary.file.replace(/\.mp4$/i, ".evidence.json");
     const runError = this.snap.error;
     const evidence = buildEvidence({
@@ -581,7 +665,7 @@ export class AppController {
         deviceScaleFactor: this.snap.stage.viewport.dpr,
         rawFrames: summary.rawFrames,
         effectiveFps: summary.rawFrames / Math.max(0.001, summary.durationS),
-        timelineFrames: summary.frames,
+        timelineFrames: summary.timelineFrames,
         ackErrors: summary.ackErrors,
         windowVisible: this.snap.stage.visible,
         headless: this.options.windowMode === "hidden",
@@ -599,21 +683,36 @@ export class AppController {
       checks: {
         frames_arrived: { passed: summary.rawFrames > 0, detail: `raw_frames=${summary.rawFrames}` },
         steps_completed: {
-          passed: recordedSteps.some((step) => step.status === "passed" || step.status === "failed"),
-          detail: `steps=${recordedSteps.length} executed=${
-            recordedSteps.filter((step) => step.status !== "pending").length
+          passed: checkSteps.some((step) => step.status === "passed" || step.status === "failed"),
+          detail: `steps=${checkSteps.length} executed=${
+            checkSteps.filter((step) => step.status !== "pending").length
           }`,
         },
         steps_within_take: {
           passed:
+            checkSteps.length > 0 &&
             summary.durationS + 0.5 >= stepsMs / 1000 &&
             summary.durationS <= stepsMs / 1000 + Math.max(5, (stepsMs / 1000) * 0.5),
           detail: `video=${summary.durationS.toFixed(2)}s steps=${(stepsMs / 1000).toFixed(2)}s`,
         },
       },
       video: summary,
+      warnings:
+        takeSteps.length === 0 && recordedSteps.length > 0
+          ? [
+              "no step ran inside this take: the listed steps come from an earlier run and are not covered by the video",
+            ]
+          : undefined,
     });
-    await writeEvidence(evidencePath, evidence);
+    try {
+      await writeEvidence(evidencePath, evidence);
+    } catch (error) {
+      // The encoder already produced the file; without this the snapshot would
+      // stay "recording" and every retry would answer E_RECORDER_NO_FRAMES.
+      this.snap.recorder = { status: "failed", outputPath: summary.file, frames: summary.frames, elapsedMs };
+      this.publish();
+      throw error;
+    }
     this.snap.recorder = {
       status: "idle",
       outputPath: summary.file,
@@ -669,8 +768,11 @@ export class AppController {
           height: input.scene.viewport.height,
           dpr: input.scene.viewport.deviceScaleFactor ?? 1,
         };
+    const videoExists = await fileExists(input.outputPath);
     const warnings = [
-      "take failed before encoding: no video was written, this file records the failure",
+      videoExists
+        ? `take failed after encoding: ${input.outputPath} exists on disk but failed self-checks; it is not a valid take`
+        : "take failed before encoding: no video was written, this file records the failure",
     ];
     if (!viewportValid) {
       warnings.push("stage viewport was unavailable; evidence falls back to the scene viewport");
@@ -742,16 +844,36 @@ export class AppController {
   private teardownStage(): void {
     this.runner = null;
     this.overlay = null;
-    this.driver?.detach();
+    // Teardown also runs from failure paths: a destroyed webContents throws on
+    // detach/close and would mask the original error, so each step is guarded.
+    try {
+      this.driver?.detach();
+    } catch (error) {
+      console.error(`[malo-browser] 分离 CDP 失败：${(error as Error).message}`);
+    }
     this.driver = null;
-    this.stage?.close();
+    try {
+      this.stage?.close();
+    } catch (error) {
+      console.error(`[malo-browser] 关闭 Stage 失败：${(error as Error).message}`);
+    }
     this.stage = null;
+    this.scene = null;
     this.currentPolicy = DENY_ALL_POLICY;
     this.currentStagePlan = null;
   }
 
   dispose(): void {
     this.teardownStage();
+  }
+}
+
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    const info = await stat(file);
+    return info.isFile();
+  } catch {
+    return false;
   }
 }
 

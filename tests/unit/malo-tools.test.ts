@@ -282,7 +282,15 @@ describe("malo-browser tool manifest", () => {
 
   it("rejects nested or session-control steps", async () => {
     const session = fakeSession();
-    for (const type of ["run_steps", "close", "watch", "profiles", "network_capture", "responses"]) {
+    for (const type of [
+      "run_steps",
+      "close",
+      "watch",
+      "login",
+      "profiles",
+      "network_capture",
+      "responses",
+    ]) {
       await expect(
         invokeMaloTool("run_steps", { steps: [{ type }] }, session),
       ).rejects.toMatchObject({ code: "E_BAD_REQUEST" });

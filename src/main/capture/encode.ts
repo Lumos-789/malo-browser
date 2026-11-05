@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { accessSync, constants, existsSync } from "node:fs";
-import { copyFile, link, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, link, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { DemoError } from "../../shared/errors";
@@ -8,6 +8,8 @@ import { createEncodeProgressLine, runToolWithProgress } from "../tools";
 import { buildTimeline } from "./timeline";
 
 const execFileAsync = promisify(execFile);
+
+const PROBE_TIMEOUT_MS = 120_000;
 
 const DEFAULT_FPS = 30;
 const VIDEO_FILTER =
@@ -114,10 +116,19 @@ async function runProcess(
   details: Record<string, unknown> = {},
 ): Promise<{ stdout: string; stderr: string }> {
   try {
-    const result = await execFileAsync(bin, args, { maxBuffer: 64 * 1024 * 1024 });
+    const result = await execFileAsync(bin, args, {
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: PROBE_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+    });
     return { stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
-    const err = error as NodeJS.ErrnoException & { stderr?: string };
+    const err = error as NodeJS.ErrnoException & { stderr?: string; killed?: boolean; signal?: string };
+    if (err.killed || err.signal) {
+      throw new DemoError("E_FFMPEG_FAILED", `${path.basename(bin)} 执行超时（${PROBE_TIMEOUT_MS}ms）已被终止`, {
+        details: { ...details, tool: bin },
+      });
+    }
     if (err.code === "ENOENT") {
       throw new DemoError("E_FFMPEG_MISSING", `找不到可执行文件：${bin}`, {
         details: { ...details, tool: bin },
@@ -157,8 +168,8 @@ export async function encodeFrames(options: EncodeFramesOptions): Promise<Encode
 
   await rm(rawDir, { recursive: true, force: true });
   await rm(sequenceDir, { recursive: true, force: true });
-  await mkdir(rawDir, { recursive: true });
-  await mkdir(sequenceDir, { recursive: true });
+  await mkdir(rawDir, { recursive: true, mode: 0o700 });
+  await mkdir(sequenceDir, { recursive: true, mode: 0o700 });
 
   try {
     for (const [index, frame] of options.frames.entries()) {
@@ -200,7 +211,11 @@ export async function encodeFrames(options: EncodeFramesOptions): Promise<Encode
           file,
         ],
         createEncodeProgressLine(slots.length),
+        // 250ms per frame is a generous ceiling for 1080p "slow"; a hung encoder
+        // must fail instead of blocking the take forever.
+        Math.max(120_000, slots.length * 250),
       );
+      await chmod(file, 0o600);
     } catch (error) {
       if (error instanceof DemoError) throw error;
       const message = (error as Error).message;
@@ -374,15 +389,20 @@ export async function verifyVideo(options: VerifyVideoOptions): Promise<Verified
 
 export async function encodeCapture(options: EncodeCaptureOptions): Promise<EncodeCaptureResult> {
   const encoded = await encodeFrames(options);
-  const verified = await verifyVideo({
-    file: encoded.file,
-    expectedDurationS: encoded.expectedDurationS,
-    tools: options.ffmpeg,
-    details: { rawDir: encoded.rawDir, sequenceDir: encoded.sequenceDir },
-  });
-  if (!options.keepFrames) {
-    await rm(encoded.sequenceDir, { recursive: true, force: true });
-    await rm(encoded.rawDir, { recursive: true, force: true });
+  try {
+    const verified = await verifyVideo({
+      file: encoded.file,
+      expectedDurationS: encoded.expectedDurationS,
+      tools: options.ffmpeg,
+      details: { rawDir: encoded.rawDir, sequenceDir: encoded.sequenceDir },
+    });
+    return { ...encoded, ...verified };
+  } finally {
+    // Verified or not, the intermediate frames are not a deliverable: a rejected
+    // take would otherwise leave ~240 JPEGs per second of footage behind.
+    if (!options.keepFrames) {
+      await rm(encoded.sequenceDir, { recursive: true, force: true });
+      await rm(encoded.rawDir, { recursive: true, force: true });
+    }
   }
-  return { ...encoded, ...verified };
 }

@@ -70,6 +70,8 @@ export const rawStepSchema = z
     clear: z.boolean().optional(),
     key_events: z.boolean().optional(),
     key: z.string().min(1).optional(),
+    modifiers: z.number().int().min(0).max(15).optional(),
+    target_text: z.string().min(1).optional(),
     dx: z.number().optional(),
     dy: z.number().optional(),
     behavior: z.enum(["auto", "instant", "smooth"]).optional(),
@@ -102,6 +104,10 @@ export const rawStepSchema = z
       hasString(step, "data_demo_id") ||
       hasString(step, "selector") ||
       hasString(step, "text");
+    // Coordinates are the documented last-resort target and resolveTarget
+    // already supports them; the validator used to reject them anyway.
+    const hasPoint = () =>
+      typeof step.x === "number" && typeof step.y === "number";
 
     if (step.optional === true && !VISUAL_ACTIONS.has(action)) {
       issue("optional", "only visual actions may set optional: true");
@@ -137,16 +143,24 @@ export const rawStepSchema = z
       case "highlight":
       case "spotlight":
       case "mask":
-        if (!hasTargetField()) {
+        if (!hasTargetField() && !hasPoint()) {
           issue(
             "data_demo_id",
-            `${action} requires data_demo_id, selector or text`,
+            `${action} requires data_demo_id, selector, text or x/y coordinates`,
           );
         }
         break;
       case "fill":
-        if (!hasString(step, "data_demo_id") && !hasString(step, "selector")) {
-          issue("data_demo_id", "fill requires data_demo_id or selector");
+        if (
+          !hasString(step, "data_demo_id") &&
+          !hasString(step, "selector") &&
+          !hasString(step, "target_text") &&
+          !hasPoint()
+        ) {
+          issue(
+            "data_demo_id",
+            "fill requires data_demo_id, selector, target_text or x/y coordinates",
+          );
         }
         if (!hasString(step, "text")) {
           issue("text", "fill requires non-empty text");
@@ -158,9 +172,7 @@ export const rawStepSchema = z
         }
         const hasTarget =
           hasString(step, "data_demo_id") || hasString(step, "selector");
-        const hasPoint =
-          typeof step.x === "number" && typeof step.y === "number";
-        if (!hasTarget && !hasPoint) {
+        if (!hasTarget && !hasPoint()) {
           issue(
             "data_demo_id",
             "annotate requires data_demo_id, selector or x/y coordinates",

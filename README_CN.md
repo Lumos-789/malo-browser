@@ -208,6 +208,12 @@ profile 数据落在 `<data-dir>/chromium`。
 `success_selector` 或 `success_url`；带明文 `password` 字段会被拒绝。配置格式、安全
 边界、运行示例和失败排查见 [docs/accounts.md](docs/accounts.md)。
 
+### 场景变量
+
+`vars` 存放场景内字符串，`${name}` 在动作字段里插值；`${env:SCENE_NAME}` 只读取
+`SCENE_` 前缀的环境变量，其他名字一律拒绝——第三方提供的场景因此无法把云密钥或 token
+拼进 URL 或表单。
+
 ### 校验
 
 Scene 层校验一次报全所有错误；未知字段、越界时间、缺目标都会在加载前失败。
@@ -228,9 +234,10 @@ evidence/
 
 app 模式的 take（autorun 或控制 API）落在
 `<out>/recordings/<timestamp>_<scene>/take-01.mp4` 与同名 `take-01.evidence.json`；
-失败步骤的截图落在 `<out>/errors/<scene>/step-<index>.png`。
+`assert` 失败会额外落一张 `<out>/errors/<scene>/step-<index>.png`（其他动作失败只带错误，
+不截图）。
 
-app 模式 evidence 以 0600 权限写入。文档记录 `status`、`app`、`scene`、`run`（多场景
+app 模式 evidence 与成片都以 0600 权限写入。文档记录 `status`、`app`、`scene`、`run`（多场景
 take 含 `run.scene_ids`）、`capture`、`video`、`steps`、`checks`、`warnings`，失败时
 还有 `error`。
 
@@ -314,8 +321,8 @@ landmark、iframe、dialog 和可交互元素的 selector；`extract` 做定向�
 `network_capture` 为当前 session 订阅命中 URL 前缀的 XHR/fetch 响应体，`responses`
 按 seq 取回，body 只留在 daemon 内存。`run_steps` 顺序执行一串工具（默认遇错即停），
 把 run report 写进 session 的 `artifacts/run-<timestamp>.json`，返回
-`{ ok, step_count, failed_step, steps, report_path }`；`watch`、`login`、`profiles` 与
-`run_steps` 自身不能再嵌进 `run_steps`；`network_capture`、`responses` 属于 session
+`{ ok, step_count, failed_step, steps, report_path }`；`run_steps`、`watch`、`login`、
+`profiles` 与 `close` 自身不能再嵌进 `run_steps`；`network_capture`、`responses` 属于 session
 控制，同样会被拒绝，捕获到的 body 不会进入 run report。
 
 lease endpoint 状态码：参数错误、未知工具、选择器找不到、导航策略拒绝 → 400；session
@@ -370,7 +377,8 @@ DNS rebinding）；只接受 JSON、请求体上限 1MB；broker / lease / sessi
 控制权」做成契约：窗口默认以 `showInactive` 出现（不抢键盘焦点、不切 Space），带原生
 标题栏和一条浏览器工具条（后退、前进、刷新，地址栏只接受 http/https，回车跳转，地址随
 页面同步）。只有显式 `focus: true` 才把窗口带到前台。凭据只存在于本次调用内存：不落盘、
-不进事件、不回显；密码框固定读 `[redacted]`。`login` 成功后窗口自动隐藏（`keep_visible:
+不进事件、不回显；密码框固定读 `[redacted]`，且对密码框做 `assert value` 会被拒绝而不是
+拿脱敏串比较。`login` 成功后窗口自动隐藏（`keep_visible:
 true` 可留给人继续操作），agent 继续用同一个 session；`watch` 打开的窗口要显式关闭才
 隐藏，超时的人工接管窗口也不会自动关闭。登录态只有指定 `profile` 时才保留。
 
@@ -458,7 +466,8 @@ scripts/
   profile 数据、每 session 的 downloads/artifacts），匿名 session 关闭时删除自己的
   partition。
 - 登录态只在指定 `profile` 的 session 上保留，直到 `DELETE /v1/profiles/:name`。
-- 权限、`window.open` 与下载默认拒绝，除非场景策略放行。
+- 权限与 `window.open` 默认拒绝。下载允许，但只能落进当前 session 自己的 `downloads/`
+  目录（文件名已消毒）；演示端（Stage）另按场景策略决定是否放行下载。
 
 ## 限制
 

@@ -6,7 +6,10 @@ import { sleep } from "./tools";
 
 type EvaluateResult<T> = {
   result: { value?: T };
-  exceptionDetails?: { text?: string; exception?: { description?: string } };
+  exceptionDetails?: {
+    text?: string;
+    exception?: { description?: string; className?: string };
+  };
 };
 
 export class ElectronPageDriver implements PageDriver {
@@ -156,6 +159,16 @@ export class ElectronPageDriver implements PageDriver {
     if (result.exceptionDetails) {
       const detail =
         result.exceptionDetails.exception?.description ?? result.exceptionDetails.text ?? "未知异常";
+      // A SyntaxError from the generated expression means the caller passed an
+      // invalid selector: that is a bad argument (400), not a step timeout.
+      // Chromium reports a parse error in `text` (no exception object), so both
+      // shapes have to be recognised.
+      const syntaxError =
+        result.exceptionDetails.exception?.className === "SyntaxError" ||
+        /\bSyntaxError\b/.test(`${detail} ${result.exceptionDetails.text ?? ""}`);
+      if (syntaxError) {
+        throw new DemoError("E_BAD_REQUEST", `选择器语法错误：${detail.split("\n")[0]}`);
+      }
       throw new DemoError("E_STEP_TIMEOUT", `页面脚本执行失败：${detail.split("\n")[0]}`);
     }
     return result.result.value as T;
@@ -181,26 +194,32 @@ export class ElectronPageDriver implements PageDriver {
 
   async click(point: Point, options: ClickOptions = {}): Promise<void> {
     const button = options.button ?? "left";
-    const clickCount = options.clickCount ?? 1;
+    const clickCount = Math.max(1, Math.floor(options.clickCount ?? 1));
+    // A real double click is click, click, dblclick: send one press/release pair
+    // per click with an increasing clickCount instead of a single pair.
+    const buttons = button === "right" ? 2 : button === "middle" ? 4 : 1;
     await this.move(point);
     await sleep(70);
-    await this.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: point.x,
-      y: point.y,
-      button,
-      buttons: 1,
-      clickCount,
-    });
-    await sleep(50);
-    await this.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: point.x,
-      y: point.y,
-      button,
-      buttons: 0,
-      clickCount,
-    });
+    for (let index = 1; index <= clickCount; index += 1) {
+      await this.send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: point.x,
+        y: point.y,
+        button,
+        buttons,
+        clickCount: index,
+      });
+      await sleep(50);
+      await this.send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button,
+        buttons: 0,
+        clickCount: index,
+      });
+      if (index < clickCount) await sleep(40);
+    }
   }
 
   async insertText(text: string): Promise<void> {
@@ -256,10 +275,11 @@ export class ElectronPageDriver implements PageDriver {
   }
 
   async screenshot(file: string): Promise<void> {
-    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { chmod, mkdir, writeFile } = await import("node:fs/promises");
     const path = await import("node:path");
     const shot = await this.send<{ data: string }>("Page.captureScreenshot", { format: "png" });
-    await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, Buffer.from(shot.data, "base64"));
+    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    await writeFile(file, Buffer.from(shot.data, "base64"), { mode: 0o600 });
+    await chmod(file, 0o600);
   }
 }

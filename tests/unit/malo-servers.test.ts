@@ -381,7 +381,11 @@ describe("lease server", () => {
     const { server } = await startLeaseHarness();
     const health = await request(server.port, { path: "/health" });
     expect(health.status).toBe(200);
-    expect(JSON.parse(health.body).lease_id).toBe("lease-test");
+    const healthBody = JSON.parse(health.body);
+    expect(healthBody.service).toBe("malo-lease");
+    // Health stays unauthenticated, so it must not enumerate leases/agents.
+    expect(healthBody.lease_id).toBeUndefined();
+    expect(healthBody.agent_id).toBeUndefined();
 
     const noLease = await request(server.port, { path: "/v1/sessions" });
     expect(noLease.status).toBe(401);

@@ -90,8 +90,16 @@ const OVERLAY_SCRIPT = String.raw`
       },
       annotate(rect, options) {
         annotate.textContent = options.text;
-        annotate.style.left = rect.left + "px";
-        annotate.style.top = Math.max(8, rect.top - 44) + "px";
+        const position = (options && options.position) || "top";
+        const width = annotate.offsetWidth || 0;
+        const height = annotate.offsetHeight || 0;
+        let left = rect.left;
+        let top = rect.top - height - 8;
+        if (position === "bottom") top = rect.top + rect.height + 8;
+        else if (position === "left") { left = rect.left - width - 8; top = rect.top; }
+        else if (position === "right") { left = rect.left + rect.width + 8; top = rect.top; }
+        annotate.style.left = Math.max(8, left) + "px";
+        annotate.style.top = Math.max(8, top) + "px";
         annotate.classList.add("on");
         later("annotate", () => annotate.classList.remove("on"), ((options && options.seconds) || 2.4) * 1000);
       },
@@ -121,39 +129,57 @@ export class ElectronOverlay implements OverlayPort {
     await this.page.evaluate<boolean>(OVERLAY_SCRIPT);
   }
 
+  /**
+   * Any navigation replaces the document and drops the overlay. Every visual
+   * operation re-checks presence and re-injects, so a scene keeps working after
+   * `goto`/`login` or a page-initiated navigation.
+   */
+  private async ensure(): Promise<void> {
+    const present = await this.page.evaluate<boolean>("Boolean(window.__maloBrowserOverlay)");
+    if (!present) await this.inject();
+  }
+
   async move(point: Point): Promise<void> {
+    await this.ensure();
     await this.page.evaluate(`window.__maloBrowserOverlay.move(${point.x}, ${point.y})`);
   }
 
   async click(point: Point): Promise<void> {
+    await this.ensure();
     await this.page.evaluate(`window.__maloBrowserOverlay.click(${point.x}, ${point.y})`);
   }
 
   async highlight(rect: Rect, seconds = 1.2, color?: string): Promise<void> {
     const json = JSON.stringify({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    await this.ensure();
     await this.page.evaluate(`window.__maloBrowserOverlay.highlight(${json}, ${seconds}, ${JSON.stringify(color ?? null)})`);
   }
 
   async spotlight(rect: Rect, options: SpotlightOptions = {}): Promise<void> {
     const box = JSON.stringify({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    await this.ensure();
     await this.page.evaluate(`window.__maloBrowserOverlay.spotlight(${box}, ${JSON.stringify(options)})`);
   }
 
   async annotate(rect: Rect, options: AnnotateOptions): Promise<void> {
     const box = JSON.stringify({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    await this.ensure();
     await this.page.evaluate(`window.__maloBrowserOverlay.annotate(${box}, ${JSON.stringify(options)})`);
   }
 
   async mask(rect: Rect, options: MaskOptions = {}): Promise<void> {
     const box = JSON.stringify({ left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+    await this.ensure();
     await this.page.evaluate(`window.__maloBrowserOverlay.mask(${box}, ${JSON.stringify(options)})`);
   }
 
   async blackout(on: boolean): Promise<void> {
+    await this.ensure();
     await this.page.evaluate(`window.__maloBrowserOverlay.blackout(${on})`);
   }
 
   async clear(): Promise<void> {
+    await this.ensure();
     await this.page.evaluate("window.__maloBrowserOverlay.clear()");
   }
 }

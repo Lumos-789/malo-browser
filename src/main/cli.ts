@@ -177,6 +177,14 @@ function readLabel(argv: string[], fallback: string): string {
   return label;
 }
 
+// 命令行里的 ~ 不会被 shell 展开（`--data-dir=~/.malo-browser` 是一个整体参数），
+// 直接在代码里展开，避免悄悄建出一个名为 "~" 的目录。
+export function expandHome(input: string): string {
+  if (input === "~") return os.homedir();
+  if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
+  return input;
+}
+
 export function parseOptions(argv: string[]): Options {
   validateFlags(argv);
   const mode = (readFlag(argv, "mode") ?? "stage") as Mode;
@@ -213,13 +221,13 @@ export function parseOptions(argv: string[]): Options {
     focusEmulation: focusFlag === undefined ? true : focusFlag !== "false",
     plain: readFlag(argv, "plain") === "true",
     url: readFlag(argv, "url") ?? "http://127.0.0.1:4788/index.html",
-    outDir: readFlag(argv, "out") ?? `${process.cwd()}/evidence`,
+    outDir: expandHome(readFlag(argv, "out") ?? `${process.cwd()}/evidence`),
     seconds: readNumber(argv, "seconds", mode === "smoke" ? 3 : 10),
     width: readNumber(argv, "width", 1440),
     height: readNumber(argv, "height", 900),
     label: readLabel(argv, requestedWindowMode),
     keepFrames: readFlag(argv, "keep-frames") === "true",
-    scenesRoot: readFlag(argv, "scenes") ?? `${process.cwd()}/fixtures/scenes`,
+    scenesRoot: expandHome(readFlag(argv, "scenes") ?? `${process.cwd()}/fixtures/scenes`),
     showStage,
     autorun,
     directorCheck,
@@ -232,6 +240,6 @@ export function parseOptions(argv: string[]): Options {
     leaseTtlSeconds: readPositiveInteger(argv, "lease-ttl-seconds", 300, 86_400),
     sessionIdleSeconds: readPositiveInteger(argv, "session-idle-seconds", 300, 86_400),
     maxSessionsPerLease,
-    dataDir: path.resolve(readFlag(argv, "data-dir") ?? path.join(os.homedir(), ".malo-browser")),
+    dataDir: path.resolve(expandHome(readFlag(argv, "data-dir") ?? path.join(os.homedir(), ".malo-browser"))),
   };
 }

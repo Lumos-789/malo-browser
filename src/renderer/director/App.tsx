@@ -85,7 +85,7 @@ function applyEvent(prev: DirectorSnapshot, event: AppEvent): DirectorSnapshot {
         run: {
           ...prev.run,
           steps,
-          stepIndex: Math.max(prev.run.stepIndex, event.index + 1),
+          stepIndex: Math.max(prev.run.stepIndex, event.index),
         },
       };
     }
@@ -105,7 +105,12 @@ function applyEvent(prev: DirectorSnapshot, event: AppEvent): DirectorSnapshot {
     case "run.completed":
       return {
         ...prev,
-        run: { ...prev.run, status: "done", stepIndex: event.stepTotal, stepTotal: event.stepTotal },
+        run: {
+          ...prev.run,
+          status: "done",
+          stepIndex: Math.max(0, event.stepTotal - 1),
+          stepTotal: event.stepTotal,
+        },
       };
     case "recorder.started":
       return {
@@ -128,8 +133,10 @@ function applyEvent(prev: DirectorSnapshot, event: AppEvent): DirectorSnapshot {
         error: {
           code: event.code,
           message: event.message,
-          stepIndex: prev.error?.stepIndex ?? null,
-          screenshotPath: prev.error?.screenshotPath ?? null,
+          // An app-level error carries no step location; reusing the previous
+          // one showed a stale step number and opened an unrelated screenshot.
+          stepIndex: null,
+          screenshotPath: null,
         },
       };
   }
@@ -348,10 +355,14 @@ export default function App({ api, mock = false }: Props) {
     );
   }
 
+  // `stepIndex` means "last executed step" (-1 before the first). The step that
+  // runs next is always the following one, whatever the run status is.
   const currentStep = snapshot.run.steps[snapshot.run.stepIndex] ?? null;
-  const upcomingIndex = snapshot.run.status === "running" ? snapshot.run.stepIndex + 1 : snapshot.run.stepIndex;
+  const upcomingIndex = snapshot.run.stepIndex + 1;
   const upcoming =
-    upcomingIndex < snapshot.run.stepTotal ? (snapshot.run.steps[upcomingIndex] ?? null) : null;
+    snapshot.run.status !== "done" && upcomingIndex < snapshot.run.stepTotal
+      ? (snapshot.run.steps[upcomingIndex] ?? null)
+      : null;
 
   return (
     <div className="app">

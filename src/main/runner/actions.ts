@@ -6,6 +6,7 @@ import type { Rect } from "../../shared/types";
 import type { PageDriver, WaitState } from "../core/page-driver";
 import type { OverlayPort } from "../core/ports";
 import { loginWithAccount } from "./login";
+import { sceneEnvValue } from "../scenes/env";
 import {
   hasBoxTarget,
   resolveTarget,
@@ -28,6 +29,8 @@ export type ActionContext = {
   timeoutMs: number;
   sleep: (ms: number) => Promise<void>;
   resolveScene?: (sceneId: string) => Promise<Scene>;
+  /** Rejects a tool-initiated navigation that the scene policy does not allow. */
+  assertNavigationAllowed?: (url: string) => void;
 };
 
 export type ActionResult = {
@@ -88,14 +91,7 @@ export function interpolate(value: string, vars: Record<string, string>): string
   return value.replace(/\$\{([^}]+)\}/g, (_match, rawName: string) => {
     const name = rawName.trim();
     if (name.startsWith("env:")) {
-      const envName = name.slice(4);
-      const envValue = process.env[envName];
-      if (envValue === undefined || envValue === "") {
-        throw new DemoError("E_SCENE_INVALID", `环境变量缺失：${envName}`, {
-          details: { variable: envName },
-        });
-      }
-      return envValue;
+      return sceneEnvValue(name.slice(4));
     }
     const valueFromScene = vars[name];
     if (valueFromScene === undefined) {
@@ -127,19 +123,27 @@ async function goto(context: ActionContext): Promise<ActionResult> {
   const rawUrl = stepString(context.step, "url");
   if (!rawUrl) throw invalid(context, "goto 缺少 url");
   const url = interpolate(rawUrl, context.vars);
+  // `webContents.loadURL` does not emit will-navigate, so the stage handler
+  // cannot see this navigation: the policy has to be enforced here.
+  context.assertNavigationAllowed?.(url);
   await context.driver.navigate(url, { timeoutMs: context.timeoutMs });
+  // Navigation replaced the document, taking the injected overlay with it.
+  await context.overlay.inject();
   return { detail: `navigated to ${url}` };
 }
 
 async function login(context: ActionContext): Promise<ActionResult> {
   const accountId = stepString(context.step, "accountId", "account_id");
   if (!accountId) throw invalid(context, "login 缺少 account_id");
-  return loginWithAccount({
+  const result = await loginWithAccount({
     driver: context.driver,
     scene: context.scene,
     accountId,
     timeoutMs: context.timeoutMs,
   });
+  // login navigates to the login page, so the overlay is gone afterwards.
+  await context.overlay.inject();
+  return result;
 }
 
 async function wait(context: ActionContext): Promise<ActionResult> {
@@ -224,11 +228,22 @@ async function press(context: ActionContext): Promise<ActionResult> {
 async function scroll(context: ActionContext): Promise<ActionResult> {
   const dx = stepNumber(context.step, "dx") ?? 0;
   const dy = stepNumber(context.step, "dy") ?? 0;
+  const behavior = stepString(context.step, "behavior");
+  if (behavior !== undefined && behavior !== "auto" && behavior !== "instant" && behavior !== "smooth") {
+    throw invalid(context, `scroll behavior 非法：${behavior}`);
+  }
   const selectorTarget = targetSelector(interpolatedTargetStep(context, false));
   if (selectorTarget) {
     const rect = await context.driver.rect(selectorTarget.selector);
     await context.driver.move({ x: rect.x, y: rect.y });
     await context.overlay.move({ x: rect.x, y: rect.y });
+  }
+  if (behavior === "smooth") {
+    // CDP mouseWheel is always instant; a smooth scroll has to go through the page.
+    await context.driver.evaluate(
+      `window.scrollBy({ left: ${JSON.stringify(dx)}, top: ${JSON.stringify(dy)}, behavior: "smooth" })`,
+    );
+    return { detail: `scrolled (${dx}, ${dy}) smooth` };
   }
   await context.driver.scroll({ x: dx, y: dy });
   return { detail: `scrolled (${dx}, ${dy})` };

@@ -1,4 +1,4 @@
-import { link, mkdir, open, rm, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { RawFrame } from "./recorder";
 import { createEncodeProgressLine, resolveTool, runTool, runToolWithProgress } from "./tools";
@@ -97,6 +97,7 @@ export async function encodeFrames(params: {
     ],
     createEncodeProgressLine(total),
   );
+  await chmod(outPath, 0o600);
 
   if (!params.keepFrames) {
     await rm(seqDir, { recursive: true, force: true });
@@ -178,6 +179,7 @@ export async function extractFrame(file: string, atSeconds: number, outPath: str
     "1",
     outPath,
   ]);
+  await chmod(outPath, 0o600);
 }
 
 export async function ssim(a: string, b: string, seconds: number): Promise<number> {

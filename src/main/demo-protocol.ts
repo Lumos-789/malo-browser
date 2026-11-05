@@ -1,8 +1,14 @@
 import type { Session } from "electron";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { DemoError } from "../shared/errors";
+import { DemoError, isDemoError } from "../shared/errors";
+import { SCENE_ID_PATTERN } from "./scenes/scene-schema";
 import { resolveScenePath } from "./security";
+
+/** The page only needs a stable code; the path stays in the main-process log. */
+function demoErrorCode(error: unknown): string {
+  return isDemoError(error) ? error.code : "E_SCENE_INVALID";
+}
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -37,6 +43,11 @@ export function registerDemoProtocol(session: Session, scenesRoot: string): void
       const segments = decodeURIComponent(url.pathname).split("/").filter(Boolean);
       const sceneId = segments.shift();
       if (!sceneId) throw new DemoError("E_SCENE_NOT_FOUND", `demo URL 缺少场景 id：${request.url}`);
+      // The scene id is the containment root for resolveScenePath, so an
+      // unvalidated id (e.g. "..") would move the root outside the scenes dir.
+      if (!SCENE_ID_PATTERN.test(sceneId)) {
+        throw new DemoError("E_SCENE_INVALID", `demo URL 场景 id 非法：${sceneId}`);
+      }
       const relative = segments.join("/") || "index.html";
       const file = await resolveScenePath(path.join(scenesRoot, sceneId), relative);
       const body = await readFile(file);
@@ -44,8 +55,10 @@ export function registerDemoProtocol(session: Session, scenesRoot: string): void
       const type = MIME[path.extname(file).toLowerCase()] ?? "application/octet-stream";
       return new Response(new Uint8Array(body), { headers: { "content-type": type } });
     } catch (error) {
-      console.error(`[malo-browser] demo:// 加载失败：${(error as Error).message}`);
-      return new Response(`demo protocol error: ${(error as Error).message}`, {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[malo-browser] demo:// 加载失败：${message}`);
+      // Do not echo the resolved filesystem path back to the page.
+      return new Response(`demo protocol error: ${demoErrorCode(error)}`, {
         status: 404,
         headers: { "content-type": "text/plain; charset=utf-8" },
       });

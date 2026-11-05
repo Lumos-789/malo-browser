@@ -142,15 +142,21 @@ the daemon lives under `<data-dir>/chromium`.
   did not match; read `result.error.details.checks` (expected/actual) and the
   failure screenshot. Only bad arguments (4xx) or server failures (5xx) are HTTP
   errors.
-- `EADDRINUSE` → port occupied; stderr prints a self-help pointer — free the
-  port or pass `--control-port`.
+- `EADDRINUSE` → port occupied; stderr prints a self-help pointer. For the demo
+  control API pass `--control-port`, for the daemon pass `--daemon-port`, and for
+  a lease exhaust change `--port-min` / `--port-max`.
 - Control API 401 → read the token from `<out>/control.json`; send it as
   `Authorization: Bearer <token>` or `x-demo-token: <token>`.
 - Director shows a MOCK marker → preload bridge missing; launch via
   `npm start` / `npm run start:control`, not by opening HTML directly.
 - `E_SELECTOR_NOT_FOUND` → no visible element matched; check target syntax
   (`fill`'s `text` is the input content — the target needs
-  `selector`/`data_demo_id`/coordinates, or `target_text`).
+  `selector`/`data_demo_id`/`target_text`, or x/y coordinates). A selector with
+  invalid syntax is a different error: `E_BAD_REQUEST` (400), not a timeout.
+- `E_NAV_BLOCKED` on a `goto` step → the scene's `allow` list does not contain
+  that origin; tool-initiated navigation is checked like page navigation.
+- `${env:NAME}` only reads `SCENE_`-prefixed variables; other names are refused
+  so a third-party scene cannot exfiltrate process secrets.
 - `E_ACCOUNT_NOT_FOUND` → account file or `account_id` missing; check
   `MALO_BROWSER_ACCOUNTS` and the available ids in the error.
 - `E_ACCOUNT_INVALID` with `0600` or `outside a git worktree` → move the

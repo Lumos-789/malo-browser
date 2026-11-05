@@ -105,7 +105,12 @@ class FakeOverlay implements OverlayPort {
   readonly masks: Array<{ rect: Rect; options?: MaskOptions }> = [];
   readonly blackouts: boolean[] = [];
   clears = 0;
+  injects = 0;
   failHighlight = false;
+
+  async inject(): Promise<void> {
+    this.injects += 1;
+  }
 
   async move(point: Point): Promise<void> {
     this.moves.push(point);
@@ -564,5 +569,66 @@ describe("Runner", () => {
     expect(install).toBeGreaterThanOrEqual(0);
     expect(navigate).toBeGreaterThan(install);
     expect(runner.currentScene()?.id).toBe("next-scene");
+  });
+
+  it("refuses a goto the scene policy does not allow", async () => {
+    const driver = new FakeDriver();
+    const overlay = new FakeOverlay();
+    const runner = new Runner({
+      driver,
+      overlay,
+      screenshotDir: SHOT_DIR,
+      assertNavigationAllowed: (url) => {
+        if (!url.startsWith("http://demo.test")) {
+          throw new DemoError("E_NAV_BLOCKED", `导航被拦截：${url}`);
+        }
+      },
+    });
+
+    await runner.load(makeScene([{ id: "away", action: "goto", url: "https://evil.test/steal" }]));
+    await expect(runner.start("rehearse")).rejects.toMatchObject({ code: "E_NAV_BLOCKED" });
+    expect(driver.navigations).not.toContain("https://evil.test/steal");
+  });
+
+  it("re-injects the overlay after a goto replaced the document", async () => {
+    const driver = new FakeDriver();
+    const overlay = new FakeOverlay();
+    const runner = new Runner({
+      driver,
+      overlay,
+      screenshotDir: SHOT_DIR,
+      assertNavigationAllowed: () => undefined,
+    });
+
+    await runner.load(makeScene([{ id: "next", action: "goto", url: "http://demo.test/next" }]));
+    const before = overlay.injects;
+    await runner.start("rehearse");
+
+    expect(driver.navigations).toContain("http://demo.test/next");
+    expect(overlay.injects).toBe(before + 1);
+  });
+
+  it("reports the step that was actually executed when stepping back", async () => {
+    const driver = new FakeDriver();
+    const overlay = new FakeOverlay();
+    const events: RunnerEvent[] = [];
+    const runner = makeRunner(driver, overlay, (event) => events.push(event));
+    const manual = { advance: "manual" as const };
+    await runner.load(
+      makeScene([
+        { id: "one", action: "note", text: "one", ...manual },
+        { id: "two", action: "note", text: "two", ...manual },
+        { id: "three", action: "note", text: "three", ...manual },
+      ]),
+    );
+
+    await runner.start("rehearse");
+    await runner.next();
+    await runner.prev();
+
+    const paused = events
+      .filter((event): event is Extract<RunnerEvent, { type: "run.paused" }> => event.type === "run.paused")
+      .at(-1);
+    expect(paused).toMatchObject({ stepIndex: 0, reloaded: false });
   });
 });

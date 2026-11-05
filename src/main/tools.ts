@@ -33,11 +33,22 @@ export function resolveTool(name: "ffmpeg" | "ffprobe"): string {
   return resolveToolOnPath(name, process.env.PATH);
 }
 
-export async function runTool(bin: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+export async function runTool(
+  bin: string,
+  args: string[],
+  timeoutMs = 120_000,
+): Promise<{ stdout: string; stderr: string }> {
   try {
-    return await execFileAsync(bin, args, { maxBuffer: 64 * 1024 * 1024 });
+    return await execFileAsync(bin, args, {
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
+    });
   } catch (error) {
-    const err = error as { stderr?: string; message: string };
+    const err = error as { stderr?: string; message: string; killed?: boolean; signal?: string };
+    if (err.killed || err.signal) {
+      throw new Error(`${bin} 执行超时（${timeoutMs}ms）已被终止`);
+    }
     throw new Error(`${bin} 执行失败：${(err.stderr ?? err.message).trim().split("\n").slice(-4).join(" | ")}`);
   }
 }
@@ -46,6 +57,7 @@ export function runToolWithProgress(
   bin: string,
   args: string[],
   onFrame?: (frame: number) => void,
+  timeoutMs = 20 * 60_000,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -53,11 +65,19 @@ export function runToolWithProgress(
     let pending = "";
     let lastFrame: number | null = null;
     let stderr = "";
+    let timer: NodeJS.Timeout | undefined;
     const fail = (error: Error): void => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       reject(error);
     };
+    // A hung encoder must not hang stop(): kill it and fail with a real reason.
+    timer = setTimeout(() => {
+      fail(new Error(`${bin} 执行超时（${timeoutMs}ms）已被终止`));
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    timer.unref();
     child.on("error", (error) => fail(new Error(`${bin} 执行失败：${error.message}`)));
     child.stdout?.on("data", (chunk: Buffer) => {
       pending += chunk.toString();
@@ -76,6 +96,7 @@ export function runToolWithProgress(
       stderr += chunk.toString();
     });
     child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
       if (code === 0) {
         if (!settled) {
           settled = true;

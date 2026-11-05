@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DemoError } from "../../shared/errors";
+import { DemoError, stripErrorCode } from "../../shared/errors";
 import type {
   MaloAction,
   MaloActionResult,
@@ -28,6 +28,7 @@ import { StageWindow } from "../windows/stage-window";
 import type { MaloAssertState } from "./assertions";
 import { buildAssertChecks, describeAssertFailure } from "./assertions";
 import { NetworkCapture } from "./network-capture";
+import { attachPartitionHooks } from "./partition-hooks";
 import { removePartitionDir } from "./profile-store";
 
 export type BrowserSessionOptions = {
@@ -46,6 +47,29 @@ const MAX_EVENT_LOG = 200;
 const DEFAULT_VIEWPORT = { width: 1440, height: 900 };
 const MAX_NETWORK_FAILURES = 40;
 const MAX_CONSOLE_ERRORS = 20;
+
+const SUPPORTED_KEY_NAMES: ReadonlySet<string> = new Set([
+  "Enter",
+  "Tab",
+  "Escape",
+  "Backspace",
+  "Delete",
+  "Insert",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "Space",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => `F${n}`),
+]);
+
+function isSupportedKey(key: string): boolean {
+  return key.length === 1 || SUPPORTED_KEY_NAMES.has(key);
+}
 
 function looksLikeChallengeUrl(url: string): boolean {
   return /(?:js_challenge|jsc_token|jsc_orig_r|\/(?:challenge|captcha|verify)(?:\/|$))/i.test(url);
@@ -108,6 +132,7 @@ export class BrowserSession {
   private readonly partitionName: string;
   private readonly driver: ElectronPageDriver;
   private readonly capture: NetworkCapture;
+  private detachHooks: (() => void) | null = null;
   private lastUsedMs = Date.now();
   private eventSeq = 0;
   private readonly events: MaloSessionEvent[] = [];
@@ -149,8 +174,8 @@ export class BrowserSession {
     const session = new BrowserSession(options);
     try {
       debug(`session ${session.id}: stage created`);
-      await mkdir(session.downloadsDir, { recursive: true });
-      await mkdir(session.artifactsDir, { recursive: true });
+      await mkdir(session.downloadsDir, { recursive: true, mode: 0o700 });
+      await mkdir(session.artifactsDir, { recursive: true, mode: 0o700 });
       debug(`session ${session.id}: dirs ready`);
       await session.prepareWebContents();
       debug(`session ${session.id}: webContents prepared`);
@@ -191,20 +216,36 @@ export class BrowserSession {
         this.record("navigation.redirect_blocked", { target, reason: (error as Error).message });
       }
     });
-    partitionSession.setPermissionRequestHandler((_contents, permission, callback) => {
-      this.record("permission.denied", { permission });
-      callback(false);
-    });
-    partitionSession.on("will-download", (_event, item) => {
-      const target = path.join(
-        this.downloadsDir,
-        `${Date.now()}-${safeDownloadName(item.getFilename())}`,
-      );
-      item.setSavePath(target);
-      this.record("download.started", { target });
-      item.once("done", (_doneEvent, state) => {
-        this.record("download.finished", { target, state });
-      });
+    // Sessions that share a profile share one Electron session, so all
+    // partition-wide handlers are installed once and dispatched by webContents.
+    this.detachHooks = attachPartitionHooks(partitionSession, {
+      webContentsId: wc.id,
+      onPermissionRequested: (permission) => {
+        this.record("permission.denied", { permission });
+      },
+      onDownload: (_event, item) => {
+        const target = path.join(
+          this.downloadsDir,
+          `${Date.now()}-${safeDownloadName(item.getFilename())}`,
+        );
+        item.setSavePath(target);
+        this.record("download.started", { target });
+        item.once("done", (_doneEvent, state) => {
+          this.record("download.finished", { target, state });
+        });
+      },
+      onRequestFailed: (details) => {
+        this.failedRequests.push({
+          url: details.url.slice(0, 500),
+          error: details.error ?? "",
+          resource_type: details.resourceType,
+        });
+        if (this.failedRequests.length > MAX_NETWORK_FAILURES) this.failedRequests.shift();
+      },
+      onMainFrameCompleted: (statusCode) => {
+        if (!this.navigationState) return;
+        this.navigationState.http_status = statusCode;
+      },
     });
     wc.on("did-start-loading", () => this.record("page.loading", { url: wc.getURL() }));
     wc.on("did-finish-load", () => this.record("page.loaded", { url: wc.getURL() }));
@@ -269,22 +310,6 @@ export class BrowserSession {
         this.navigationState.load_state = "failed";
         this.navigationState.net_error_description = `renderer ${details.reason}`;
       }
-    });
-    partitionSession.webRequest.onErrorOccurred((details) => {
-      if (details.webContentsId !== undefined && details.webContentsId !== wc.id) return;
-      if (details.error === "net::ERR_ABORTED") return;
-      this.failedRequests.push({
-        url: details.url.slice(0, 500),
-        error: details.error,
-        resource_type: details.resourceType,
-      });
-      if (this.failedRequests.length > MAX_NETWORK_FAILURES) this.failedRequests.shift();
-    });
-    partitionSession.webRequest.onCompleted((details) => {
-      if (details.webContentsId !== undefined && details.webContentsId !== wc.id) return;
-      if (details.resourceType !== "mainFrame" || details.statusCode <= 0) return;
-      if (!this.navigationState) return;
-      this.navigationState.http_status = details.statusCode;
     });
     await wc.loadURL("about:blank");
   }
@@ -736,6 +761,7 @@ export class BrowserSession {
       ? input.attributes.filter((item): item is string => typeof item === "string").slice(0, 40)
       : [];
     const all = input.all !== false;
+    await this.assertValidSelector(input.selector);
     const result = await this.driver.evaluate<MaloExtractResult>(`(() => {
       const selector = ${JSON.stringify(input.selector)};
       const mode = ${JSON.stringify(mode)};
@@ -756,9 +782,7 @@ export class BrowserSession {
         const rect = el.getBoundingClientRect();
         return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
       };
-      let nodes = [];
-      try { nodes = Array.from(document.querySelectorAll(selector)); }
-      catch (error) { return { selector, mode, count: 0, matches: [], truncated: false, error: String(error) }; }
+      let nodes = Array.from(document.querySelectorAll(selector));
       const total = nodes.length;
       if (!all) nodes = nodes.slice(0, 1);
       else nodes = nodes.slice(0, 50);
@@ -801,6 +825,12 @@ export class BrowserSession {
       const state = await this.readAssertState(input);
       if (state.invalid_selector !== null) {
         throw new DemoError("E_BAD_REQUEST", `assert 选择器无效：${state.invalid_selector}`);
+      }
+      if (state.value_redacted) {
+        throw new DemoError(
+          "E_BAD_REQUEST",
+          "不支持断言密码框的 value：密码字段永远读不到真实值，改用 visible 或页面上的登录态断言",
+        );
       }
       const checks = buildAssertChecks(input, state);
       if (checks.every((check) => check.ok)) {
@@ -845,6 +875,7 @@ export class BrowserSession {
         hidden_visible: null,
         text: null,
         value: null,
+        value_redacted: false,
         count: null,
         invalid_selector: null,
       };
@@ -863,7 +894,11 @@ export class BrowserSession {
         }
         if (params.wants_value) {
           const el = document.querySelector(params.selector);
-          out.value = el ? (el.type === "password" ? "[redacted]" : String(el.value ?? "")) : null;
+          if (el && el.type === "password") {
+            out.value_redacted = true;
+          } else {
+            out.value = el ? String(el.value ?? "") : null;
+          }
         }
         if (params.wants_count) out.count = document.querySelectorAll(params.selector).length;
       } catch (error) {
@@ -878,7 +913,10 @@ export class BrowserSession {
     this.touch();
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const target = path.join(this.artifactsDir, `run-${stamp}.json`);
-    await writeFile(target, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    await writeFile(target, `${JSON.stringify(report, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
     this.record("run.finished", {
       ok: report.ok,
       step_count: report.step_count,
@@ -903,7 +941,7 @@ export class BrowserSession {
       const message = error instanceof Error ? error.message : String(error);
       this.record("action.failed", { action: action.type, message, screenshotPath });
       if (error instanceof DemoError) {
-        throw new DemoError(error.code, message, {
+        throw new DemoError(error.code, stripErrorCode(error.code, message), {
           ...error.toDetail(),
           screenshotPath: screenshotPath ?? error.screenshotPath,
         });
@@ -1218,11 +1256,17 @@ export class BrowserSession {
         if (typeof action.key !== "string" || action.key === "") {
           throw new DemoError("E_UNSUPPORTED", "press.key 必须是非空字符串");
         }
+        if (!isSupportedKey(action.key)) {
+          throw new DemoError(
+            "E_UNSUPPORTED",
+            `press.key 不支持：${action.key}；可用单字符或 ${[...SUPPORTED_KEY_NAMES].join(" / ")}`,
+          );
+        }
         if (
           action.modifiers !== undefined &&
-          (!Number.isInteger(action.modifiers) || action.modifiers < 0)
+          (!Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15)
         ) {
-          throw new DemoError("E_UNSUPPORTED", "press.modifiers 必须是非负整数");
+          throw new DemoError("E_UNSUPPORTED", "press.modifiers 必须是 0-15 的整数位掩码");
         }
         await this.driver.press(action.key, action.modifiers ?? 0);
         return `pressed ${action.key}`;
@@ -1410,6 +1454,8 @@ export class BrowserSession {
     if (this.closed) return;
     this.closed = true;
     this.record("session.closed", { profile: this.profile });
+    this.detachHooks?.();
+    this.detachHooks = null;
     const wc = this.stage.view.webContents;
     if (this.profile === null) {
       try {
@@ -1430,6 +1476,8 @@ export class BrowserSession {
   private abortCreate(): void {
     if (this.closed) return;
     this.closed = true;
+    this.detachHooks?.();
+    this.detachHooks = null;
     try {
       this.driver.detach();
     } catch {
@@ -1437,6 +1485,16 @@ export class BrowserSession {
     }
     this.capture.dispose();
     this.stage.close();
+  }
+
+  private async assertValidSelector(selector: string): Promise<void> {
+    const error = await this.driver.evaluate<string | null>(`(() => {
+      try { document.querySelector(${JSON.stringify(selector)}); return null; }
+      catch (error) { return String((error && error.message) || error); }
+    })()`);
+    if (error !== null) {
+      throw new DemoError("E_BAD_REQUEST", `选择器语法错误：${error}`);
+    }
   }
 
   private async captureFailure(): Promise<string | null> {

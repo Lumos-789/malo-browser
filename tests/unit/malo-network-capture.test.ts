@@ -35,6 +35,7 @@ class FakeCdp implements CaptureTransport {
   bodyCalls = 0;
   maxBodyCallsInFlight = 0;
   failEnable: string | null = null;
+  failDisable: string | null = null;
   failBody: string | null = null;
   bodyDelayMs = 0;
   bodyBarrier: Promise<void> | null = null;
@@ -57,6 +58,7 @@ class FakeCdp implements CaptureTransport {
     }
     if (method === "Network.disable") {
       this.disableCalls += 1;
+      if (this.failDisable !== null) throw new Error(this.failDisable);
       return {} as T;
     }
     if (method === "Network.getResponseBody") {
@@ -557,6 +559,30 @@ describe("network capture", () => {
       captured: 0,
     });
     expect(capture.query({}).responses).toEqual([]);
+    capture.dispose();
+  });
+
+  it("recovers when a failed disable is followed by a new subscription", async () => {
+    const cdp = new FakeCdp();
+    const capture = new NetworkCapture(cdp);
+
+    await capture.setSubscription([`${base}/api/`]);
+    cdp.failDisable = "Network.disable rejected";
+    await expect(capture.setSubscription([])).rejects.toMatchObject({
+      code: "E_CAPTURE_UNAVAILABLE",
+    });
+
+    // The session must not be stuck: clearing the subscription again retries
+    // the disable, and subscribing again re-enables and clears the failure.
+    cdp.failDisable = null;
+    await expect(capture.setSubscription([])).resolves.toEqual({
+      url_prefixes: [],
+      captured: 0,
+    });
+    cdp.failEnable = null;
+    const state = await capture.setSubscription([`${base}/api/`]);
+    expect(state.url_prefixes).toEqual([`${base}/api/`]);
+    expect(() => capture.state()).not.toThrow();
     capture.dispose();
   });
 

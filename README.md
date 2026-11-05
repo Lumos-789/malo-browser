@@ -226,6 +226,13 @@ same-origin, and define `success_selector` or `success_url`; a plaintext `passwo
 is rejected. Format, security boundary, examples and failure troubleshooting:
 [docs/accounts.md](docs/accounts.md).
 
+### Scene variables
+
+`vars` holds scene-local strings; `${name}` interpolates them into action fields, and
+`${env:SCENE_NAME}` reads an environment variable from the `SCENE_` namespace only — any
+other name is rejected, so a third-party scene cannot pull cloud keys or tokens into a
+URL or form field.
+
 ### Validation
 
 Scene validation reports every error at once; unknown fields, out-of-range times and
@@ -246,10 +253,11 @@ evidence/
 ```
 
 An app-mode take (autorun or control API) writes
-`<out>/recordings/<timestamp>_<scene>/take-01.mp4` plus `take-01.evidence.json`; failed
-step screenshots go to `<out>/errors/<scene>/step-<index>.png`.
+`<out>/recordings/<timestamp>_<scene>/take-01.mp4` plus `take-01.evidence.json`; a failed
+`assert` step also writes `<out>/errors/<scene>/step-<index>.png` (other failing actions
+carry the error, not a screenshot).
 
-App-mode evidence files are written with mode 0600. The document records `status`,
+App-mode evidence and the encoded mp4 are written with mode 0600. The document records `status`,
 `app`, `scene`, `run` (including `run.scene_ids` for multi-scene takes), `capture`,
 `video`, `steps`, `checks`, `warnings` and `error` when the take failed.
 
@@ -340,8 +348,8 @@ does targeted reads. `network_capture` subscribes this session to XHR/fetch resp
 bodies for matching URL prefixes and `responses` returns them by seq, in daemon memory
 only. `run_steps` runs a list of those tools in order (stop at the first failure by
 default), writes a run report to the session's `artifacts/run-<timestamp>.json`, and
-returns `{ ok, step_count, failed_step, steps, report_path }`; `watch`, `login`,
-`profiles` and `run_steps` cannot be nested inside `run_steps`; `network_capture` and
+returns `{ ok, step_count, failed_step, steps, report_path }`; `run_steps`, `watch`,
+`login`, `profiles` and `close` cannot be nested inside `run_steps`; `network_capture` and
 `responses` are session controls and are rejected there too, so captured bodies never
 reach a run report.
 
@@ -405,7 +413,8 @@ appears with `showInactive` by default (no keyboard focus, no Space switch), has
 title bar and a browser toolbar (back, forward, reload, address bar that accepts only
 http/https, Enter to navigate, address synced from the page). `focus: true` is the only
 way to bring it to the front. Credentials live only in that call's memory: never written
-to disk, events or responses; password fields read `[redacted]`. A successful `login`
+to disk, events or responses; password fields read `[redacted]` and `assert value` on a
+password input is rejected instead of compared. A successful `login`
 hides the handoff window again (unless `keep_visible: true`), and the agent keeps the
 same session; `watch` stays visible until it is hidden explicitly, and a timed-out
 handoff window is not closed automatically. The login state survives only with a
@@ -503,8 +512,9 @@ scripts/
   session partitions when those sessions close.
 - Login state persists only for named `profile` sessions, until
   `DELETE /v1/profiles/:name`.
-- Permissions, `window.open` and downloads are denied unless the scene policy allows
-  them.
+- Permissions and `window.open` are denied. Downloads are allowed, but only into the
+  session's own `downloads/` directory (sanitized filename); the demo stage additionally
+  refuses downloads unless the scene policy allows them.
 
 ## Limitations
 

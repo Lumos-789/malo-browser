@@ -120,6 +120,8 @@ function mapStep(raw: RawStep, index: number): SceneStep {
   assign("clear", raw.clear);
   assign("keyEvents", raw.key_events);
   assign("key", raw.key);
+  assign("modifiers", raw.modifiers);
+  assign("targetText", raw.target_text);
   assign("dx", raw.dx);
   assign("dy", raw.dy);
   assign("behavior", raw.behavior);

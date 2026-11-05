@@ -122,8 +122,9 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/navigate \
 { "name": "research", "profile": "work" }
 ```
 
-- profile 存在 `<data-dir>/chromium/Partitions/persist:malo-profile-<name>`，
-  daemon 的 Chromium 用户数据整体落在 `<data-dir>/chromium`，一个目录管住全部状态
+- profile 存在 `<data-dir>/chromium/Partitions/malo-profile-<name>`（Electron 分区的
+  `persist:` 前缀不进入目录名），daemon 的 Chromium 用户数据整体落在 `<data-dir>/chromium`，
+  一个目录管住全部状态
 - 只接受小写字母、数字、点、下划线、短横线，最长 64 字符；最多 64 个 profile
 - 同名 profile 会被多个 session 共享，因此并行 agent 各自用自己的名字，例如 `agent-a.work`
 - 未指定 profile 的 session 行为不变：关闭即清空，不会继承任何登录态
@@ -230,12 +231,13 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/assert \
 ```
 
 `selector` 在 `assert` 里有两个用途：给 `text` 限定查找范围，或作为 `value` / `count`
-的目标。密码输入框的 `value` 在检查结果里固定为 `[redacted]`。
+的目标。对密码输入框做 `value` 断言会直接返回 400（密码值永远读不到，拿脱敏串比较只会
+假通过），改用 `visible` 或页面上的登录态断言。
 
 `run_steps` 把一串工具调用交给 daemon 顺序执行，默认遇错即停（`stop_on_failure:false`
 可继续），最后把每一步的结果与错误写进 session `artifacts/` 下的 run report，
-返回 `{ ok, step_count, failed_step, steps, report_path }`。`watch`、`login`、`profiles`、
-`network_capture`、`responses` 和 `run_steps` 自身不能再嵌进 `run_steps`（响应体永远
+返回 `{ ok, step_count, failed_step, steps, report_path }`。`run_steps`、`watch`、`login`、
+`profiles`、`close`、`network_capture`、`responses` 都不能再嵌进 `run_steps`（响应体永远
 不进 run report）。
 
 ```bash
@@ -416,9 +418,10 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/login \
 
 - 默认 `focus=false`，窗口用 `showInactive` 出现：不抢键盘焦点、不切换 Space；只有显式 `focus:true` 才上前台
 - `password` 模式自动识别用户名、密码和提交按钮，可用 `username_selector`、`password_selector`、`submit_selector` 覆盖
-- 成功判定按 `success_url_contains`、`success_selector`、密码框消失、URL 变化、页面文本变化依次尝试
+- 成功判定是**互斥**的：给了 `success_selector` 就只看它，给了 `success_url_contains` 就只看 URL；
+  两者都没给才退回「密码框消失 / URL 变化 / 页面出现退出登录等文本」的启发式
 - 失败判定看 `error_selector` 或页面上的常见错误文案，返回 `reason=login_error` 而不是空转重试
-- 凭据只存在于本次调用内存：不落盘、不进事件、不回显；快照里密码框固定返回 `[redacted]`，并标记 `sensitive: true`
+- 凭据只存在于本次调用内存：不落盘、不进事件、不回显；快照里密码框的 `value` 固定为空串并标记 `sensitive: true`（`[redacted]` 只出现在 `interactive[].text`）
 - 登录态只有指定 `profile` 时才保留，未指定就随 session 一起清掉
 - `watch` 成功后窗口自动隐藏，agent 继续用同一个 session；`keep_visible: true` 可留给人继续操作
 - 超时的人工接管窗口不会自动关闭，人处理完再调 `watch` 收起
@@ -433,7 +436,10 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/login \
 - 请求体上限 1MB，只接受 `application/json`
 - 每 lease 默认最多 4 个 session；超出返回 429
 - 空闲 session 默认 300 秒回收
-- 不同 session 的 cookies、storage、下载、页面和事件互不共享
+- 不同 session 的 cookies、storage、下载、页面和事件互不共享；共享 profile 的多个
+  session 之间，下载仍按发起它的 webContents 归属到各自 session 的 `downloads/`
+- 数据目录与 session 目录按 0700 建立，`broker.json` / `profiles.json` / 失败截图 /
+  run report 一律 0600；录制成片同样 0600
 - `profile` 是显式共享单元：同名 profile 的 session 共用 cookies，名字由调用方自己隔离
 - profile 数据只落在 `<data-dir>/chromium`，清理走 `DELETE /v1/profiles/:name`
 - 匿名 session 关闭时会清空 storage 并删除自己的 partition 目录，不留在磁盘上

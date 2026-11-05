@@ -117,3 +117,53 @@ describe("ElectronPageDriver CDP event registry", () => {
     expect(seen).toEqual(["b"]);
   });
 });
+
+describe("ElectronPageDriver evaluate error mapping", () => {
+  it("maps a selector SyntaxError to a bad request instead of a step timeout", async () => {
+    const wc = fakeContents();
+    wc.debugger.sendCommand.mockResolvedValueOnce({
+      result: { value: undefined },
+      exceptionDetails: {
+        text: "Uncaught",
+        exception: {
+          description: "SyntaxError: Failed to execute 'querySelector' on 'Document'",
+          className: "SyntaxError",
+        },
+      },
+    });
+    const driver = new ElectronPageDriver(wc as never);
+
+    await expect(driver.evaluate("document.querySelector('##bad')")).rejects.toMatchObject({
+      code: "E_BAD_REQUEST",
+    });
+  });
+
+  it("keeps a genuine page error as a step timeout", async () => {
+    const wc = fakeContents();
+    wc.debugger.sendCommand.mockResolvedValueOnce({
+      result: { value: undefined },
+      exceptionDetails: {
+        text: "Uncaught",
+        exception: { description: "TypeError: boom", className: "TypeError" },
+      },
+    });
+    const driver = new ElectronPageDriver(wc as never);
+
+    await expect(driver.evaluate("boom()")).rejects.toMatchObject({ code: "E_STEP_TIMEOUT" });
+  });
+
+  it("also maps a parse error reported only in exceptionDetails.text", async () => {
+    const wc = fakeContents();
+    wc.debugger.sendCommand.mockResolvedValueOnce({
+      result: { value: undefined },
+      exceptionDetails: {
+        text: "Uncaught SyntaxError: Failed to execute 'querySelector' on 'Document'",
+      },
+    });
+    const driver = new ElectronPageDriver(wc as never);
+
+    await expect(driver.evaluate("document.querySelector('##bad')")).rejects.toMatchObject({
+      code: "E_BAD_REQUEST",
+    });
+  });
+});

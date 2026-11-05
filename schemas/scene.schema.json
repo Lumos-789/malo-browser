@@ -206,6 +206,15 @@
           "type": "string",
           "minLength": 1
         },
+        "target_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "modifiers": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
         "dx": {
           "type": "number"
         },
@@ -358,6 +367,9 @@
               },
               {
                 "required": ["text"]
+              },
+              {
+                "required": ["x", "y"]
               }
             ]
           }
@@ -379,6 +391,12 @@
               },
               {
                 "required": ["selector"]
+              },
+              {
+                "required": ["target_text"]
+              },
+              {
+                "required": ["x", "y"]
               }
             ]
           }

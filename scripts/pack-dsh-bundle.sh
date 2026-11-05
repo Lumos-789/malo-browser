@@ -25,7 +25,9 @@ npm run build >/dev/null
 
 echo "==> staging ${NAME}"
 mkdir -p "$STAGE/package"
-cp -R index.js cordis.patch.yml package.json assets skills out \
+# The bundled skill links to docs/*.md and schemas/scene.schema.json, so the
+# tarball must carry them (npm's `files` is not what stages this directory).
+cp -R index.js cordis.patch.yml package.json assets skills out docs schemas \
       README.md README_CN.md CHANGELOG.md LICENSE "$STAGE/package/"
 
 echo "==> packing ${OUT}"

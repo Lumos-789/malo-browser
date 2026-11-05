@@ -24,15 +24,24 @@ export function wireIpc(controller: AppController, director: DirectorWindow): vo
     const alt = input.alt;
     if (!meta || !alt) return;
     const key = input.key;
-    if (key === "ArrowRight") void controller.next();
-    else if (key === "ArrowLeft") void controller.prev();
-    else if (key === " ") void controller.pause();
-    else if (key.toLowerCase() === "b") void controller.blackout(!controller.snapshot().stage.blackout);
+    // Shortcuts must never reach the process-level unhandledRejection handler:
+    // a rejected promise there calls app.exit(). Surface the error in the UI.
+    const run = (action: () => unknown) => {
+      try {
+        void Promise.resolve(action()).catch((error: unknown) => controller.reportError(error));
+      } catch (error) {
+        controller.reportError(error);
+      }
+    };
+    if (key === "ArrowRight") run(() => controller.next());
+    else if (key === "ArrowLeft") run(() => controller.prev());
+    else if (key === " ") run(() => controller.pause());
+    else if (key.toLowerCase() === "b") run(() => controller.blackout(!controller.snapshot().stage.blackout));
     else if (key.toLowerCase() === "f")
-      void controller.setFullscreen(!controller.snapshot().stage.fullscreen);
+      run(() => controller.setFullscreen(!controller.snapshot().stage.fullscreen));
     else if (key.toLowerCase() === "r") {
       const status = controller.snapshot().recorder.status;
-      void (status === "recording" ? controller.recordStop() : controller.recordStart());
+      run(() => (status === "recording" ? controller.recordStop() : controller.recordStart()));
     } else {
       return;
     }

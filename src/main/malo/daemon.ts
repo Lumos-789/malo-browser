@@ -113,7 +113,9 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
   }
   const dataDir = path.resolve(options.dataDir);
   const brokerFile = path.join(dataDir, "broker.json");
-  await mkdir(dataDir, { recursive: true });
+  // mode applies to newly created directories only: an existing path is left
+  // alone (chmod-ing it could tighten a directory the user pointed us at).
+  await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const profileStore = new ProfileStore(path.join(dataDir, "profiles.json"));
   await profileStore.load();
   const previous = await readExistingBroker(brokerFile);

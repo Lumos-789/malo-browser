@@ -7,6 +7,8 @@ export type MaloAssertState = {
   hidden_visible: boolean | null;
   text: boolean | null;
   value: string | null;
+  /** True when the target is a password field: its value is never compared. */
+  value_redacted: boolean;
   count: number | null;
   invalid_selector: string | null;
 };

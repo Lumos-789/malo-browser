@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import os from "node:os";
+import path from "node:path";
 import { isHelpRequested, isVersionRequested, KNOWN_FLAGS, parseOptions, USAGE } from "../../src/main/cli";
 
 describe("cli window defaults", () => {
@@ -160,5 +162,26 @@ describe("cli daemon flags", () => {
     expect(() => parseOptions(["--mode=daemon", "--session-idle-seconds=1.5"])).toThrow(/整数/);
     expect(() => parseOptions(["--mode=daemon", "--max-sessions=0"])).toThrow(/正数/);
     expect(() => parseOptions(["--mode=daemon", "--max-sessions=65"])).toThrow(/1-64/);
+  });
+});
+
+describe("cli path expansion", () => {
+  it("expands a leading ~ instead of creating a literal ~ directory", () => {
+    const home = os.homedir();
+    const opts = parseOptions([
+      "--mode=daemon",
+      "--data-dir=~/.malo-browser",
+      "--out=~/evidence",
+      "--scenes=~/scenes",
+    ]);
+    expect(opts.dataDir).toBe(path.join(home, ".malo-browser"));
+    expect(opts.outDir).toBe(path.join(home, "evidence"));
+    expect(opts.scenesRoot).toBe(path.join(home, "scenes"));
+  });
+
+  it("leaves absolute and relative paths untouched", () => {
+    const opts = parseOptions(["--mode=daemon", "--data-dir=/tmp/malo", "--out=./out"]);
+    expect(opts.dataDir).toBe("/tmp/malo");
+    expect(opts.outDir).toBe("./out");
   });
 });

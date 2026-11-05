@@ -271,10 +271,13 @@ export function assertFailureResult(error: unknown): MaloAssertFailure | null {
 
 // network_capture and responses are session controls; responses also carries
 // body text, which must never reach the run report written by run_steps.
+// login is blocked because it can open a handoff window (mode=watch) and type
+// credentials, which a batch run must not do silently.
 const RUN_STEP_BLOCKED = new Set([
   "run_steps",
   "close",
   "watch",
+  "login",
   "profiles",
   "network_capture",
   "responses",

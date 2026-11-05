@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export async function sha256File(file: string): Promise<string> {
@@ -19,8 +19,16 @@ export function sha256Text(text: string): string {
 }
 
 export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}`;
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
-  await rename(tmp, file);
+  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
+  try {
+    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+    await rename(tmp, file);
+  } catch (error) {
+    await rm(tmp, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }

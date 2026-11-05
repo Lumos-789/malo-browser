@@ -141,7 +141,8 @@ export function createMockApi(): DemoStagePreloadApi {
     run: {
       mode: "live",
       status: "paused",
-      stepIndex: 2,
+      // stepIndex is the last executed step; buildSteps(scene, 2) passed two.
+      stepIndex: 1,
       stepTotal: initialScene.steps.length,
       steps: buildSteps(initialScene, 2),
       startedAt: new Date(Date.now() - 42_000).toISOString(),
@@ -200,7 +201,7 @@ export function createMockApi(): DemoStagePreloadApi {
 
   const advance = (): void => {
     const total = snapshot.run.stepTotal;
-    const index = snapshot.run.stepIndex;
+    const index = snapshot.run.stepIndex + 1;
     if (index >= total) return;
     const step = snapshot.run.steps[index];
     if (!step) return;
@@ -220,11 +221,10 @@ export function createMockApi(): DemoStagePreloadApi {
       }
       setStepStatus(index, { status: "passed", durationMs: 1200 });
       emit({ type: "step.completed", index, id: step.id, durationMs: 1200 });
+      snapshot.run = { ...snapshot.run, stepIndex: index };
       if (index + 1 >= total) {
-        snapshot.run = { ...snapshot.run, stepIndex: total, status: "done" };
+        snapshot.run = { ...snapshot.run, status: "done" };
         emit({ type: "run.completed", stepTotal: total });
-      } else {
-        snapshot.run = { ...snapshot.run, stepIndex: index + 1 };
       }
       publish();
     }, ACTIVE_STEP_MS);
@@ -275,7 +275,7 @@ export function createMockApi(): DemoStagePreloadApi {
             snapshot.run = {
               ...snapshot.run,
               status: "loading",
-              stepIndex: 0,
+              stepIndex: -1,
               stepTotal: scene.steps.length,
               steps: buildSteps(scene),
               startedAt: null,
@@ -306,10 +306,10 @@ export function createMockApi(): DemoStagePreloadApi {
             advance();
             break;
           case "run.prev": {
-            const index = Math.max(0, snapshot.run.stepIndex - 1);
+            const index = Math.max(0, snapshot.run.stepIndex + 1);
             snapshot.error = null;
             setStepStatus(index, { status: "pending", detail: undefined, durationMs: undefined });
-            snapshot.run = { ...snapshot.run, stepIndex: index, status: "paused" };
+            snapshot.run = { ...snapshot.run, stepIndex: index - 1, status: "paused" };
             publish();
             break;
           }
@@ -330,7 +330,7 @@ export function createMockApi(): DemoStagePreloadApi {
             snapshot.run = {
               ...snapshot.run,
               status: "ready",
-              stepIndex: 0,
+              stepIndex: -1,
               steps: buildSteps(scene),
               startedAt: null,
               elapsedMs: 0,

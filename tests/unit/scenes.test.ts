@@ -10,6 +10,7 @@ import {
   listScenes,
   loadScene,
   parseScene,
+  rawStepSchema,
   scriptSha256,
 } from "../../src/main/scenes";
 
@@ -194,6 +195,27 @@ describe("parseScene", () => {
     expect(errors.some((entry) => entry.startsWith("steps[0]."))).toBe(true);
     expect(errors.some((entry) => entry.includes("typo_field"))).toBe(true);
     expect(error.message).toContain("typo_field");
+  });
+
+  it("accepts the documented target, key and scroll fields", () => {
+    const raw = baseScene();
+    raw.steps = [
+      { action: "click", x: 640, y: 360 },
+      { action: "highlight", selector: ".btn", seconds: 1 },
+      { action: "spotlight", data_demo_id: "row-1" },
+      { action: "mask", x: 10, y: 20, mode: "solid" },
+      { action: "annotate", text: "note", x: 10, y: 20, position: "bottom" },
+      // `fill` by target_text and by coordinates are both documented forms.
+      { action: "fill", target_text: "Search", text: "risk" },
+      { action: "fill", x: 12, y: 34, text: "risk" },
+      { action: "press", key: "Enter", modifiers: 4 },
+      { action: "scroll", dy: 200, behavior: "smooth" },
+    ];
+
+    const scene = parseBase(raw);
+    expect(scene.steps).toHaveLength(9);
+    expect(scene.steps[5].targetText).toBe("Search");
+    expect(scene.steps[7].modifiers).toBe(4);
   });
 
   it("requires exactly one of url and file", () => {
@@ -425,5 +447,20 @@ describe("scene.schema.json", () => {
 
     expect(schema.properties.steps).toBeDefined();
     expect(schema.$defs.step.properties.action.enum).toEqual([...SCENE_ACTIONS]);
+  });
+
+  it("declares every step field the runtime schema accepts", async () => {
+    const text = await readFile(
+      path.join(process.cwd(), "schemas/scene.schema.json"),
+      "utf8",
+    );
+    const schema = JSON.parse(text) as {
+      $defs: { step: { properties: Record<string, unknown> } };
+    };
+    // The published field contract must not drift from the zod schema: that is
+    // exactly how `target_text`/`modifiers` became documented-but-rejected.
+    const runtimeKeys = Object.keys(rawStepSchema.shape).sort();
+    const publishedKeys = Object.keys(schema.$defs.step.properties).sort();
+    expect(publishedKeys).toEqual(runtimeKeys);
   });
 });

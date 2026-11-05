@@ -1,5 +1,116 @@
 # Changelog
 
+## 0.1.6
+
+Full review pass; every item below was reproduced before fixing.
+
+### Isolation and security
+
+- **Shared-profile sessions no longer cross-wire downloads or network state.** Electron
+  keeps one `webRequest` listener and one permission handler per session, and
+  `will-download` fires for every webContents in the partition. Two sessions on the same
+  `profile` used to fight over `setSavePath` (a download started in A could land in B's
+  `downloads/`) and the newer session silently disabled the older one's failure
+  tracking. Handlers are now installed once per Electron session and dispatched by
+  webContents id (`src/main/malo/partition-hooks.ts`); a download with no owner is
+  cancelled.
+- **The demo stage now blocks redirects, not just navigations.** Server-side 3xx emits
+  `will-redirect`, which was never hooked, so an allowlisted origin could 302 to an
+  arbitrary one and the remaining steps ran there. Both events share one gate now.
+- **`goto` obeys the scene allowlist.** `webContents.loadURL` does not emit
+  `will-navigate`, so tool-initiated navigation was unchecked; the runner now asks the
+  host policy first (`assertNavigationAllowed`).
+- **`${env:NAME}` is limited to `SCENE_*`.** A third-party scene could interpolate any
+  `process.env` value (cloud keys, tokens) into a URL or form field, and the allowlist
+  was declared by that same scene.
+- **`demo://` validates the scene id.** The protocol handler used the URL segment as the
+  containment root, so `demo://scene/..%2Fprivate%2Fcredential.json` served files one
+  level above the scenes root. It now applies `SCENE_ID_PATTERN`, and a 404 no longer
+  echoes the resolved filesystem path to the page.
+- **`--data-dir=~/.malo-browser` actually expands `~`** instead of creating a literal `~`
+  directory (`--out` and `--scenes` too).
+- Data dir and session dirs are created 0700; run reports, failure screenshots and
+  encoded takes are 0600 (the legacy evidence writer was 0644).
+- `GET /health` on a lease endpoint no longer enumerates `lease_id` / `agent_id`
+  without a token.
+
+### Recording and evidence
+
+- **A rejected take no longer claims "no video was written"** while a playable mp4 sits
+  on disk: the failed-evidence warning names the file and says it failed self-checks.
+- Frame temp dirs (`<take>-frames`, `<take>-seq`) are cleaned even when encoding is
+  rejected, so a failed take stops leaving hundreds of JPEGs behind.
+- `ffmpeg` / `ffprobe` now run with timeouts (120s probe, 250ms/frame encode, 20min
+  ceiling) and are killed instead of hanging `stop()` forever.
+- `capture.timeline_frames` reports the encoder's slot count instead of duplicating
+  `video.frames`.
+- The `steps_completed` / `steps_within_take` checks only consider steps executed inside
+  the take; borrowing the whole scene's step list could pass a take that ran nothing.
+- A failed evidence write no longer leaves the recorder stuck in "recording".
+
+### Demo pipeline
+
+- **Director shortcuts can no longer kill the app.** Every shortcut rejection used to
+  reach the process-level `unhandledRejection` handler, which calls `app.exit()`; a
+  routine "no scene loaded" or "nothing to step back to" ended the session. Shortcuts now
+  surface the error in the UI.
+- **`goto` / `login` no longer break every later visual step.** Navigation drops the
+  injected overlay, and only load/switch re-injected it, so `goto` → `click` failed with
+  `TypeError: … reading 'click'`. The overlay is now installed on demand and re-injected
+  after navigation; `reset` / `stop` / `prev` recover too.
+- `runner.load()` is awaited, removing the load/start race that surfaced as
+  "场景尚未就绪" on slow or redirected scenes.
+- A failed `scene.load` no longer leaks an untracked `BaseWindow`.
+- The documented-but-rejected scene fields now parse: `fill.target_text`,
+  `press.modifiers`, and x/y coordinates for `click` / `fill` / `highlight` /
+  `spotlight` / `mask` (and `target_text` survives normalization instead of being
+  dropped).
+- `scroll.behavior: smooth` is implemented; `annotate.position` now places the label
+  where it says.
+- Director step indexing uses one convention (last executed step), so a paused run no
+  longer shows the completed step as both "current" and "next"; `app.error` no longer
+  inherits a stale step index and screenshot.
+- Blackout state is cleared on scene load and on a same-URL scene switch; leaving
+  fullscreen re-applies the active scene's viewport instead of the pre-fullscreen one.
+
+### Tools
+
+- Action errors no longer carry the code twice
+  (`E_SELECTOR_NOT_FOUND: E_SELECTOR_NOT_FOUND: …`).
+- A selector with invalid syntax is `E_BAD_REQUEST` (400) on every tool instead of a
+  misleading `E_STEP_TIMEOUT` (504).
+- `extract` with an invalid selector is a 4xx instead of HTTP 200 with `count: 0` and an
+  undeclared `error` field.
+- `assert value` on a password input is rejected; comparing the redacted literal made
+  `value: "[redacted]"` pass regardless of the real value.
+- `press` validates the key name instead of reporting success for `Enterr`.
+- `run_steps` rejects `login` (it can open a handoff window and type credentials) as the
+  docs always claimed, and the docs now also list `close`.
+- `network_capture` recovers after a failed `Network.disable` instead of being stuck.
+- `ProfileStore` writes recover after one failed write instead of failing forever.
+
+### Docs and packaging
+
+- README/README_CN corrected where they contradicted the code: download policy (the agent
+  runtime accepts downloads into the session dir, it does not need a scene policy),
+  password redaction (`snapshot` returns `""` + `sensitive`, `[redacted]` is the
+  interactive text), failed-step screenshots (only `assert`), `--data-dir=~`, and the
+  scene-variable/`SCENE_` rule.
+- `docs/malo-browser.md`: mutually exclusive login success heuristic, partition dir
+  without the `persist:` prefix, updated `run_steps` blocklist, new permission/mode notes.
+- The published field contract `schemas/scene.schema.json` accepts the same step fields
+  as the runtime (`target_text`, `modifiers`, coordinate targets), and a unit test now
+  fails when the two schemas drift apart — that drift is how the fields became
+  documented-but-rejected in the first place.
+- `SKILL.md`: `EADDRINUSE` advice distinguishes control / broker / lease, invalid
+  selector is `E_BAD_REQUEST`, added `E_NAV_BLOCKED` and the `SCENE_` rule.
+- `package.json` `files` now ships `docs/` and `schemas/`, which the bundled skill links
+  to (the DSH bundle is still installed from the prebuilt Release tarball because `out/`
+  is gitignored); `scripts/pack-dsh-bundle.sh` stages the same two directories.
+- `package-lock.json` root version caught up with `package.json`.
+
+Tests: 232 → 252.
+
 ## 0.1.5
 
 - `scripts/pack-dsh-bundle.sh` builds and packs the prebuilt DSH bundle attached

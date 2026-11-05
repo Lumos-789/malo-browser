@@ -5,6 +5,8 @@ export type AnnotateOptions = { text: string; position?: "top" | "bottom" | "lef
 export type MaskOptions = { mode?: "blur" | "solid"; color?: string };
 
 export interface OverlayPort {
+  /** (Re)install the in-page overlay; must be idempotent. */
+  inject(): Promise<void>;
   move(point: Point): Promise<void>;
   click(point: Point): Promise<void>;
   highlight(rect: Rect, seconds: number, color?: string): Promise<void>;

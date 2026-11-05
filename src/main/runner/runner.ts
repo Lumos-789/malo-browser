@@ -18,6 +18,7 @@ import type {
 import type { PageDriver } from "../core/page-driver";
 import type { OverlayPort } from "../core/ports";
 import { executeAction, VISUAL_ACTIONS, type ActionResult } from "./actions";
+import { sceneEnvValue } from "../scenes/env";
 import { hasBoxTarget, hasStepTarget, stepBoolean, stepNumber, stepString, targetSelector } from "./targets";
 
 export type RunnerClock = {
@@ -34,6 +35,8 @@ export type RunnerOptions = {
   resolveScene?: (sceneId: string) => Promise<Scene>;
   /** Runs after the new scene is bound but before navigation, so the host can swap policy first. */
   onSceneWillInstall?: (scene: Scene) => void;
+  /** Throws when a tool-initiated navigation leaves the scene's allowlist. */
+  assertNavigationAllowed?: (url: string) => void;
 };
 
 export type RunnerSnapshot = {
@@ -84,6 +87,7 @@ export class Runner {
   private readonly screenshotDir: string;
   private readonly resolveScene?: (sceneId: string) => Promise<Scene>;
   private readonly onSceneWillInstall?: (scene: Scene) => void;
+  private readonly assertNavigationAllowed?: (url: string) => void;
 
   private scene: Scene | null = null;
   private records: StepRecord[] = [];
@@ -112,6 +116,7 @@ export class Runner {
     this.screenshotDir = options.screenshotDir;
     this.resolveScene = options.resolveScene;
     this.onSceneWillInstall = options.onSceneWillInstall;
+    this.assertNavigationAllowed = options.assertNavigationAllowed;
   }
 
   async load(scene: Scene): Promise<void> {
@@ -193,7 +198,7 @@ export class Runner {
         const url = await this.navigateScene(this.scene, true);
         this.status = "paused";
         this.emit({ type: "scene.ready", sceneId: this.scene.id, url });
-        this.emit({ type: "run.paused", stepIndex: 0, reloaded: true });
+        this.emit({ type: "run.paused", stepIndex: this.snapshot().stepIndex, reloaded: true });
       } catch (error) {
         this.failRun(this.toDemoError(error, this.currentIndex));
         throw this.error;
@@ -211,7 +216,7 @@ export class Runner {
     this.cursor = target;
     this.currentIndex = target - 1;
     this.status = "paused";
-    this.emit({ type: "run.paused", stepIndex: target, reloaded: false });
+    this.emit({ type: "run.paused", stepIndex: this.snapshot().stepIndex, reloaded: false });
     return this.snapshot();
   }
 
@@ -454,6 +459,7 @@ export class Runner {
       timeoutMs,
       sleep: this.sleep,
       resolveScene: this.resolveScene,
+      assertNavigationAllowed: this.assertNavigationAllowed,
     });
   }
 
@@ -657,12 +663,7 @@ function interpolateUrl(value: string, vars: Record<string, string>): string {
   return value.replace(/\$\{([^}]+)\}/g, (_match, rawName: string) => {
     const name = rawName.trim();
     if (name.startsWith("env:")) {
-      const envName = name.slice(4);
-      const envValue = process.env[envName];
-      if (envValue === undefined || envValue === "") {
-        throw new DemoError("E_SCENE_INVALID", `环境变量缺失：${envName}`);
-      }
-      return envValue;
+      return sceneEnvValue(name.slice(4));
     }
     const sceneValue = vars[name];
     if (sceneValue === undefined) {

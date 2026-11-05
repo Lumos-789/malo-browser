@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -77,5 +77,26 @@ describe("profile store", () => {
 
     const reloaded = new ProfileStore(file);
     expect((await reloaded.list()).map((item) => item.name)).toEqual(["gone", "ok"]);
+  });
+});
+
+describe("profile store write recovery", () => {
+  it("keeps writing after a failed persist instead of poisoning the chain", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "malo-profile-recover-"));
+    const blocker = path.join(dir, "blocker");
+    await writeFile(blocker, "not a directory");
+    // mkdir(dirname) fails with ENOTDIR while the blocker is a regular file.
+    const file = path.join(blocker, "profiles.json");
+    const store = new ProfileStore(file);
+
+    await expect(store.touch("work")).rejects.toBeTruthy();
+
+    await rm(blocker, { force: true });
+    await mkdir(blocker);
+    await expect(store.touch("work")).resolves.toMatchObject({ name: "work" });
+
+    const reloaded = new ProfileStore(file);
+    expect((await reloaded.list()).map((item) => item.name)).toEqual(["work"]);
+    await rm(dir, { recursive: true, force: true });
   });
 });

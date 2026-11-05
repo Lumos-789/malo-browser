@@ -99,12 +99,7 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
     const url = new URL(req.url ?? "/", `http://${LOOPBACK}:${port}`);
     const route = `${req.method ?? "GET"} ${url.pathname}`;
     if (route === "GET /health") {
-      sendJson(res, 200, {
-        status: "ok",
-        service: "malo-lease",
-        lease_id: options.leaseId,
-        agent_id: options.agentId,
-      });
+      sendJson(res, 200, { status: "ok", service: "malo-lease" });
       return;
     }
     const provided = extractBearer(req, "x-malo-lease-token");
