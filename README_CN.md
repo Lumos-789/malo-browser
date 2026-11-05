@@ -314,7 +314,7 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/snapshot \
 ```
 
 工具：`navigate`、`history`、`events`、`observe`、`snapshot`、`extract`、`click`、
-`fill`、`press`、`hover`、`select`、`focus`、`scroll`、`scroll_into_view`、`wait_for`、
+`fill`、`upload_file`、`press`、`hover`、`select`、`focus`、`scroll`、`scroll_into_view`、`wait_for`、
 `sleep`、`assert`、`run_steps`、`network_capture`、`responses`、`watch`、`login`、
 `profiles`、`close`。`snapshot` 返回正文、标题、链接、按钮、输入框、表单、表格、
 landmark、iframe、dialog 和可交互元素的 selector；`extract` 做定向读取。

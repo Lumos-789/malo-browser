@@ -77,6 +77,13 @@ describe("malo-browser tool manifest", () => {
     }
   });
 
+  it("declares upload_file with a selector and host file paths", () => {
+    const tool = MALO_TOOLS.find((item) => item.name === "upload_file");
+    expect(tool).toBeDefined();
+    expect(tool!.input_schema.required).toEqual(["selector", "files"]);
+    expect(tool!.input_schema.properties).toHaveProperty("files");
+  });
+
   it("routes tool calls to page operations", async () => {
     const session = fakeSession();
     await invokeMaloTool("navigate", { url: "https://example.com", settle_ms: 100 }, session);
@@ -103,6 +110,17 @@ describe("malo-browser tool manifest", () => {
 
     await invokeMaloTool("click", { selector: "#go" }, session);
     expect(session.act).toHaveBeenCalledWith({ selector: "#go", type: "click" });
+
+    await invokeMaloTool(
+      "upload_file",
+      { selector: "input[type=file]", files: ["/tmp/report.xlsx"] },
+      session,
+    );
+    expect(session.act).toHaveBeenCalledWith({
+      selector: "input[type=file]",
+      files: ["/tmp/report.xlsx"],
+      type: "upload_file",
+    });
 
     await invokeMaloTool("close", {}, session);
     expect(session.close).toHaveBeenCalledOnce();

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.7
+
+- **New `upload_file` tool.** Sets files on an `input[type=file]` through CDP
+  `DOM.setFileInputFiles`, so the input may stay visually hidden; a site whose upload
+  button opens a native picker still needs that button clicked first. `selector` must
+  match an input and `files` are absolute paths on the host running the browser. A
+  missing selector fails as `E_SELECTOR_NOT_FOUND` (400 on the lease endpoint) like the
+  other action tools, and the tool is allowed inside `run_steps`. The manifest now
+  declares 25 session tools.
+
 ## 0.1.6
 
 Full review pass; every item below was reproduced before fixing.

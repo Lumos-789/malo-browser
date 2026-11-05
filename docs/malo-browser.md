@@ -164,7 +164,7 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/snapshot \
 
 - `navigate`、`history`、`events`
 - `observe`、`snapshot`、`extract`
-- `click`、`fill`、`press`、`hover`、`select`、`focus`
+- `click`、`fill`、`upload_file`、`press`、`hover`、`select`、`focus`
 - `scroll`、`scroll_into_view`、`wait_for`、`sleep`
 - `assert`（visible / hidden / text / value / url / count）
 - `run_steps`（批量串行执行上面的工具，产出 run report 文件）

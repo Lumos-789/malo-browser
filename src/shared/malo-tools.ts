@@ -85,6 +85,25 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
     },
   },
   {
+    name: "upload_file",
+    description:
+      "Set files on an input[type=file]. The input may be visually hidden: click the site's upload button first when the page needs it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        selector: { type: "string", description: "CSS selector for the input[type=file] element." },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          description: "Absolute paths on the host running the browser.",
+        },
+      },
+      required: ["selector", "files"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "press",
     description: "Press a key. Cmd+A/C/V/X/Z map to editing commands; other Meta chords are rejected.",
     input_schema: {

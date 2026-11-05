@@ -226,6 +226,21 @@ export class ElectronPageDriver implements PageDriver {
     await this.send("Input.insertText", { text });
   }
 
+  async uploadFiles(selector: string, files: string[]): Promise<void> {
+    const document = await this.send<{ root: { nodeId: number } }>("DOM.getDocument", { depth: -1 });
+    const found = await this.send<{ nodeId: number }>("DOM.querySelector", {
+      nodeId: document.root.nodeId,
+      selector,
+    });
+    if (!found.nodeId) {
+      throw new DemoError("E_SELECTOR_NOT_FOUND", `找不到文件输入元素 ${selector}`, {
+        selector,
+        url: this.wc.getURL(),
+      });
+    }
+    await this.send("DOM.setFileInputFiles", { nodeId: found.nodeId, files });
+  }
+
   async press(key: string, modifiers = 0): Promise<void> {
     // CDP Meta key events fall through to the macOS application menu and can
     // open the native About panel. Route the common editing shortcuts through

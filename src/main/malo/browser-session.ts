@@ -1252,6 +1252,19 @@ export class BrowserSession {
         await this.driver.insertText(action.text);
         return `filled ${action.selector} with ${action.text.length} chars`;
       }
+      case "upload_file": {
+        if (typeof action.selector !== "string" || action.selector.trim() === "") {
+          throw new DemoError("E_UNSUPPORTED", "upload_file.selector 必须是非空字符串");
+        }
+        if (!Array.isArray(action.files) || action.files.length === 0) {
+          throw new DemoError("E_UNSUPPORTED", "upload_file.files 必须是非空字符串数组");
+        }
+        if (action.files.some((item) => typeof item !== "string" || item.trim() === "")) {
+          throw new DemoError("E_UNSUPPORTED", "upload_file.files 必须是非空字符串数组");
+        }
+        await this.driver.uploadFiles(action.selector, action.files);
+        return `uploaded ${action.files.length} file(s) to ${action.selector}`;
+      }
       case "press": {
         if (typeof action.key !== "string" || action.key === "") {
           throw new DemoError("E_UNSUPPORTED", "press.key 必须是非空字符串");

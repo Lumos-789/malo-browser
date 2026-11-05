@@ -340,7 +340,7 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/snapshot \
 ```
 
 Tools: `navigate`, `history`, `events`, `observe`, `snapshot`, `extract`, `click`,
-`fill`, `press`, `hover`, `select`, `focus`, `scroll`, `scroll_into_view`, `wait_for`,
+`fill`, `upload_file`, `press`, `hover`, `select`, `focus`, `scroll`, `scroll_into_view`, `wait_for`,
 `sleep`, `assert`, `run_steps`, `network_capture`, `responses`, `watch`, `login`,
 `profiles`, `close`. `snapshot` returns body text, title, links, buttons, inputs, forms,
 tables, landmarks, iframes, dialogs and selectors for interactive elements; `extract`

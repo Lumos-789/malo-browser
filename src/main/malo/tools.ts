@@ -226,6 +226,7 @@ export async function invokeMaloTool(
       break;
     case "click":
     case "fill":
+    case "upload_file":
     case "press":
     case "hover":
     case "select":

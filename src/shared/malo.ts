@@ -288,6 +288,12 @@ export type MaloFillAction = {
   clear?: boolean;
 };
 
+export type MaloUploadFileAction = {
+  type: "upload_file";
+  selector: string;
+  files: string[];
+};
+
 export type MaloPressAction = {
   type: "press";
   key: string;
@@ -345,6 +351,7 @@ export type MaloSleepAction = {
 export type MaloAction =
   | MaloClickAction
   | MaloFillAction
+  | MaloUploadFileAction
   | MaloPressAction
   | MaloScrollAction
   | MaloHoverAction
