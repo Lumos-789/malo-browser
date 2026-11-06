@@ -179,6 +179,34 @@ def import_profile_login(lease: "MaloLease", profile: str, cdp_url: str,
     return lease._post(f"/v1/profiles/{profile}/import", body)
 
 
+def open_session(agent_id: str, url: str, profile: str | None = None,
+                 debug_port: int | None = DEFAULT_CDP_PORT,
+                 required_tools: tuple[str, ...] = BASE_REQUIRED_TOOLS,
+                 log_path: Path | None = None,
+                 settle_ms: int = 3000,
+                 width: int = 1440, height: int = 900) -> tuple["MaloLease", "MaloSession"]:
+    """一步到位：拉起带 CDP 调试口的 daemon → 租约 → profile 会话 → 导航到 url。
+
+    返回 (lease, session)；调用方 finally 里 session.close() + lease.release()
+    （登录态已沉淀 profile，收尾失败不影响）。导航结果 ok:false 时抛 MaloError。
+    Playwright 直连调试口（http://127.0.0.1:<debug_port>）可继续驱动该会话页。
+    width/height 是会话视口（CSS 内容区，录制场景按 16:9 给）。
+    """
+    ensure_daemon(log_path=log_path, debug_port=debug_port)
+    lease = acquire_lease(agent_id, required_tools=required_tools, log_path=log_path)
+    try:
+        session = lease.new_session(f"{profile or 'anon'}-session", profile=profile,
+                                    width=width, height=height)
+        r = session.call("navigate", {"url": url, "timeout_ms": 45_000,
+                                      "settle_ms": settle_ms})
+        if isinstance(r, dict) and r.get("ok") is False:
+            raise MaloError(f"malo 会话导航失败（{url}）：{str(r)[:300]}")
+        return lease, session
+    except Exception:
+        lease.release()
+        raise
+
+
 class MaloLease:
     """一个端口租约：心跳续租、session 生命周期、工具调用入口。"""
 
