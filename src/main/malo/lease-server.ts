@@ -43,6 +43,8 @@ function statusFor(error: unknown): number {
     if (error.code === "E_SESSION_NOT_FOUND") return 404;
     if (error.code === "E_PROFILE_LOCKED") return 409;
     if (error.code === "E_RESOURCE_LIMIT") return 429;
+    if (error.code === "E_IMPORT_SOURCE_UNREACHABLE") return 502;
+    if (error.code === "E_IMPORT_EMPTY") return 400;
     if (
       error.code === "E_NAV_BLOCKED" ||
       error.code === "E_UNSUPPORTED" ||
@@ -147,6 +149,35 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
     if (profileMatch && req.method === "DELETE") {
       const name = decodeURIComponent(profileMatch[1]);
       sendJson(res, 200, await options.manager.clearProfile(name));
+      return;
+    }
+    const importMatch = /^\/v1\/profiles\/([^/]+)\/import$/.exec(url.pathname);
+    if (importMatch && req.method === "POST") {
+      const body = await readJsonObject(req);
+      if (typeof body.cdp_url !== "string" || body.cdp_url.trim() === "") {
+        throw new BadRequest("cdp_url 必须是非空字符串（源 Chrome 的 CDP 端点，如 http://127.0.0.1:9223）");
+      }
+      const domains =
+        Array.isArray(body.domains) && body.domains.length > 0
+          ? body.domains.filter((domain): domain is string => typeof domain === "string" && domain !== "")
+          : undefined;
+      if (body.domains !== undefined && domains === undefined) {
+        throw new BadRequest("domains 必须是非空字符串数组");
+      }
+      const ttlDays =
+        body.session_cookie_ttl_days === undefined ? 180 : Number(body.session_cookie_ttl_days);
+      if (!Number.isFinite(ttlDays) || ttlDays < 0 || ttlDays > 3650) {
+        throw new BadRequest("session_cookie_ttl_days 必须是 0-3650 的数字");
+      }
+      sendJson(
+        res,
+        200,
+        await options.manager.importProfileLogin(decodeURIComponent(importMatch[1]), {
+          cdp_url: body.cdp_url,
+          domains,
+          session_cookie_ttl_days: ttlDays,
+        }),
+      );
       return;
     }
     const authorizedSession = (id: string) => {

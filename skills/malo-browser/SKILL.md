@@ -94,8 +94,12 @@ never written to events or responses.
 Persistent login state: create a session with `{"profile":"work"}` to keep
 cookies and storage across sessions and daemon restarts; omit it and the session
 closes anonymous. Inspect or clear profiles with `GET /v1/profiles` and
-`DELETE /v1/profiles/:name` (409 while sessions still use it). Chromium data for
-the daemon lives under `<data-dir>/chromium`.
+`DELETE /v1/profiles/:name` (409 while sessions still use it). Seed a profile from
+an already-logged-in Chromium with `POST /v1/profiles/:name/import` (lease token)
+passing `{"cdp_url":"http://127.0.0.1:<port>"}` (loopback only) plus optional
+`domains` filter — it pulls cookies live over the source's DevTools endpoint and
+writes them into the profile's partition, so logins move over without re-typing
+credentials. Chromium data for the daemon lives under `<data-dir>/chromium`.
 
 ## Configure
 

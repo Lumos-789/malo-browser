@@ -24,6 +24,8 @@ export const ERROR_CODES = [
   "E_RESOURCE_LIMIT",
   "E_BAD_REQUEST",
   "E_UNSUPPORTED",
+  "E_IMPORT_SOURCE_UNREACHABLE",
+  "E_IMPORT_EMPTY",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

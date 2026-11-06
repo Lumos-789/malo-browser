@@ -362,6 +362,16 @@ async function startLeaseHarness(): Promise<{
       },
     ]),
     clearProfile: vi.fn(async (name: string) => ({ profile: name, existed: true })),
+    importProfileLogin: vi.fn(async (name: string, input: { cdp_url: string }) => ({
+      profile: name,
+      created: true,
+      source: input.cdp_url,
+      cookies_total: 10,
+      cookies_matched: 4,
+      cookies_written: 4,
+      cookies_failed: 0,
+      failed: [],
+    })),
   } as unknown as SessionManager;
 
   const server = await startLeaseServer({
@@ -537,6 +547,53 @@ describe("lease server", () => {
     });
     expect(locked.status).toBe(409);
     expect(JSON.parse(locked.body).error.code).toBe("E_PROFILE_LOCKED");
+  });
+
+  it("imports login state into a profile from a loopback CDP source", async () => {
+    const harness = await startLeaseHarness();
+    const ok = await request(harness.server.port, {
+      method: "POST",
+      path: "/v1/profiles/work/import",
+      headers: leaseHeaders(),
+      body: JSON.stringify({ cdp_url: "http://127.0.0.1:9223", domains: ["example.com"] }),
+    });
+    expect(ok.status).toBe(200);
+    const parsed = JSON.parse(ok.body);
+    expect(parsed.profile).toBe("work");
+    expect(parsed.cookies_written).toBe(4);
+    expect(vi.mocked(harness.manager.importProfileLogin).mock.calls[0][1]).toMatchObject({
+      cdp_url: "http://127.0.0.1:9223",
+      domains: ["example.com"],
+      session_cookie_ttl_days: 180,
+    });
+
+    const missingUrl = await request(harness.server.port, {
+      method: "POST",
+      path: "/v1/profiles/work/import",
+      headers: leaseHeaders(),
+      body: JSON.stringify({}),
+    });
+    expect(missingUrl.status).toBe(400);
+
+    const badTtl = await request(harness.server.port, {
+      method: "POST",
+      path: "/v1/profiles/work/import",
+      headers: leaseHeaders(),
+      body: JSON.stringify({ cdp_url: "http://127.0.0.1:9223", session_cookie_ttl_days: -1 }),
+    });
+    expect(badTtl.status).toBe(400);
+
+    vi.mocked(harness.manager.importProfileLogin).mockRejectedValueOnce(
+      new DemoError("E_IMPORT_SOURCE_UNREACHABLE", "连不上源 CDP"),
+    );
+    const failing = await request(harness.server.port, {
+      method: "POST",
+      path: "/v1/profiles/work/import",
+      headers: leaseHeaders(),
+      body: JSON.stringify({ cdp_url: "http://127.0.0.1:9223" }),
+    });
+    expect(failing.status).toBe(502);
+    expect(JSON.parse(failing.body).error.code).toBe("E_IMPORT_SOURCE_UNREACHABLE");
   });
 
   it("returns navigation diagnostics and rejects an invalid settle window", async () => {

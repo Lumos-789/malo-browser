@@ -30,6 +30,23 @@ export type MaloProfile = {
   active_sessions: number;
 };
 
+export type MaloProfileImportInput = {
+  cdp_url: string;
+  domains?: string[];
+  session_cookie_ttl_days?: number;
+};
+
+export type MaloProfileImportResult = {
+  profile: string;
+  created: boolean;
+  source: string;
+  cookies_total: number;
+  cookies_matched: number;
+  cookies_written: number;
+  cookies_failed: number;
+  failed: Array<{ name: string; domain: string; error: string }>;
+};
+
 export type MaloNavigationDiagnostics = {
   requested_url: string;
   final_url: string;

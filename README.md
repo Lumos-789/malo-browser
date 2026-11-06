@@ -359,6 +359,34 @@ session cap → 429; navigation failure → 502; step timeout → 504; real serv
 500. A navigation failure carries `details.navigation` (`http_status`, `net_error`,
 `net_error_description`, `settle`).
 
+### Profile login import
+
+`POST /v1/profiles/:name/import` seeds a persistent profile with cookies read live from
+another Chromium's DevTools endpoint, so a logged-in daily Chrome can hand its login
+state to a malo profile without re-typing credentials:
+
+```bash
+curl -X POST http://127.0.0.1:7411/v1/profiles/work/import \
+  -H "x-malo-lease-token: $LEASE_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"cdp_url":"http://127.0.0.1:9223"}'
+```
+
+Body: `cdp_url` (required, loopback `http://` only), `domains` (optional allowlist, e.g.
+`["example.com","example.org"]` — a cookie matches when its domain equals, is a subdomain of,
+or is a parent of an entry), and `session_cookie_ttl_days` (default 180; session cookies
+are re-stamped as persistent so the imported login survives daemon restarts; `0` keeps
+them session-only). The daemon connects to the source's browser-level WebSocket and calls
+`Storage.getCookies`, writes each cookie through the Electron cookie store of the target
+profile's partition, and returns
+`{ profile, created, source, cookies_total, cookies_matched, cookies_written, cookies_failed, failed }`
+(`failed` lists up to 20 per-cookie write errors, e.g. `__Host-` cookies that fail
+Chromium's prefix rules). Importing merges into whatever the profile already has; it
+never clears existing state, and cookies whose login has expired on the server side still
+need a real re-login. Source unreachable → 502 `E_IMPORT_SOURCE_UNREACHABLE`; zero
+cookies matched → 400 `E_IMPORT_EMPTY`. Only cookies move; localStorage, IndexedDB and
+HTTP cache stay in the source browser.
+
 Security boundary: loopback only, `Host` must be `127.0.0.1:<port>` or
 `localhost:<port>` (DNS-rebinding guard), JSON only with a 1MB body cap, broker / lease /
 session tokens are three separate layers, navigation is `http:`/`https:` only with

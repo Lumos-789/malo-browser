@@ -88,6 +88,11 @@ export class ProfileStore {
       .map((name) => this.toProfile(name));
   }
 
+  async exists(name: string): Promise<boolean> {
+    await this.load();
+    return this.data.profiles[name] !== undefined;
+  }
+
   async touch(name: string): Promise<MaloProfile> {
     await this.load();
     const existing = this.data.profiles[name];

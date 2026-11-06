@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.8
+
+- **New profile login import: `POST /v1/profiles/:name/import`.** Seeds a persistent
+  profile with cookies read live from another Chromium's DevTools endpoint
+  (`cdp_url`, loopback `http://` only), so a logged-in daily Chrome hands its login
+  state to a malo profile without re-typing credentials. The daemon connects to the
+  source browser-level WebSocket, calls `Storage.getCookies`, and writes each cookie
+  through the Electron cookie store of the target partition — this crosses the
+  Chrome/Electron keychain encryption boundary that makes raw profile-file copies
+  unreadable. Optional `domains` allowlist filters which cookies move (equal,
+  subdomain, or parent matches); `session_cookie_ttl_days` (default 180) re-stamps
+  session cookies as persistent so imported logins survive daemon restarts (`0` keeps
+  them session-only). The response reports
+  `cookies_total / cookies_matched / cookies_written / cookies_failed` with up to 20
+  per-cookie errors (e.g. `__Host-` prefix rejections). Import merges, never clears;
+  only cookies move (localStorage / IndexedDB stay in the source). Source unreachable
+  → 502 `E_IMPORT_SOURCE_UNREACHABLE`; zero matched cookies → 400 `E_IMPORT_EMPTY`.
+
 ## 0.1.7
 
 - **New `upload_file` tool.** Sets files on an `input[type=file]` through CDP

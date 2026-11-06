@@ -1,7 +1,13 @@
 import { session as electronSession } from "electron";
 import { DemoError } from "../../shared/errors";
-import type { MaloProfile, MaloSessionCreated } from "../../shared/malo";
+import type {
+  MaloProfile,
+  MaloProfileImportInput,
+  MaloProfileImportResult,
+  MaloSessionCreated,
+} from "../../shared/malo";
 import { BrowserSession } from "./browser-session";
+import { importLoginState } from "./login-import";
 import {
   profilePartition,
   type ProfileStore,
@@ -135,6 +141,18 @@ export class SessionManager {
     }
     const existed = await this.options.profiles.remove(name);
     return { profile: name, existed };
+  }
+
+  async importProfileLogin(
+    rawName: string,
+    input: MaloProfileImportInput,
+  ): Promise<MaloProfileImportResult> {
+    const name = validateProfileName(rawName);
+    const partitionSession = electronSession.fromPartition(profilePartition(name));
+    const result = await importLoginState(partitionSession, input);
+    const created = !(await this.options.profiles.exists(name));
+    await this.options.profiles.touch(name);
+    return { profile: name, created, ...result };
   }
 
   private async closeSession(session: BrowserSession): Promise<void> {
