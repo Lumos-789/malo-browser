@@ -57,7 +57,8 @@ export class BrowserToolbar {
   }
 
   layout(width: number, height: number): void {
-    if (this.view.webContents.isDestroyed()) return;
+    const view = this.view.webContents;
+    if (!view || view.isDestroyed()) return;
     this.view.setBounds({ x: 0, y: 0, width, height: Math.min(TOOLBAR_HEIGHT, height) });
   }
 
@@ -88,26 +89,39 @@ export class BrowserToolbar {
   }
 
   destroy(): void {
-    toolbars.delete(this.view.webContents.id);
-    if (!this.view.webContents.isDestroyed()) this.view.webContents.close();
+    // BrowserView 销毁后 .webContents 是 undefined（不是 destroyed 对象），
+    // 先判空再操作；同时摘掉页面事件监听，避免销毁竞态窗口里再进 pushState。
+    const view = this.view.webContents;
+    if (view) toolbars.delete(view.id);
+    const wc = this.page.webContents;
+    if (wc) {
+      wc.removeListener("did-navigate", this.push);
+      wc.removeListener("did-navigate-in-page", this.push);
+      wc.removeListener("did-start-loading", this.push);
+      wc.removeListener("did-stop-loading", this.push);
+      wc.removeListener("did-fail-load", this.push);
+      wc.removeListener("page-title-updated", this.push);
+    }
+    if (view && !view.isDestroyed()) view.close();
   }
+
+  private readonly push = (): void => this.pushState();
 
   private watchPage(): void {
     const wc = this.page.webContents;
-    const push = () => this.pushState();
-    wc.on("did-navigate", push);
-    wc.on("did-navigate-in-page", push);
-    wc.on("did-start-loading", push);
-    wc.on("did-stop-loading", push);
-    wc.on("did-fail-load", push);
-    wc.on("page-title-updated", push);
+    wc.on("did-navigate", this.push);
+    wc.on("did-navigate-in-page", this.push);
+    wc.on("did-start-loading", this.push);
+    wc.on("did-stop-loading", this.push);
+    wc.on("did-fail-load", this.push);
+    wc.on("page-title-updated", this.push);
   }
 
   private pushState(): void {
     const toolbar = this.view.webContents;
-    if (toolbar.isDestroyed()) return;
+    if (!toolbar || toolbar.isDestroyed()) return;
     const wc = this.page.webContents;
-    if (wc.isDestroyed()) return;
+    if (!wc || wc.isDestroyed()) return;
     const state: BrowserToolbarState = {
       url: wc.getURL(),
       title: wc.getTitle(),

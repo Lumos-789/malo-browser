@@ -34,6 +34,9 @@ MALO_REPO = Path(__file__).resolve().parent.parent.parent
 BROKER_JSON = Path.home() / ".malo-browser" / "broker.json"
 DEFAULT_BROKER_ENDPOINT = "http://127.0.0.1:7410"
 DEFAULT_LOG = Path.home() / ".malo-browser" / "daemon.log"
+# daemon 的 CDP 调试口：带上后 session 页即普通 CDP target，
+# Playwright connect_over_cdp 可直连（登录链等存量脚本的迁移通道）。
+DEFAULT_CDP_PORT = 9450
 
 # 每个客户端按需声明必需工具；缺失 = daemon 版本过旧，fail-loud 不降级。
 BASE_REQUIRED_TOOLS = ("navigate", "click", "fill", "snapshot", "assert", "close")
@@ -85,7 +88,7 @@ def _read_broker_json() -> dict:
         return {}
 
 
-def _spawn_daemon(started_by: str, log_path: Path) -> None:
+def _spawn_daemon(started_by: str, log_path: Path, debug_port: int | None = None) -> None:
     """后台拉起 daemon（detached，不抢焦点；日志追加到 log_path）。"""
     electron = MALO_REPO / "node_modules" / ".bin" / "electron"
     entry = MALO_REPO / "out" / "main" / "index.js"
@@ -93,27 +96,45 @@ def _spawn_daemon(started_by: str, log_path: Path) -> None:
                     (entry, f"malo 未构建（out/main 缺失）: cd {MALO_REPO} && npm run build")):
         if not p.exists():
             raise MaloError(f"无法拉起 malo daemon——{hint}")
+    cmd = [str(electron), ".", "--mode=daemon"]
+    if debug_port:
+        cmd.append(f"--remote-debugging-port={debug_port}")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a") as log:
         log.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} spawn by {started_by} =====\n")
         log.flush()
         subprocess.Popen(
-            [str(electron), ".", "--mode=daemon"], cwd=MALO_REPO,
+            cmd, cwd=MALO_REPO,
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
             start_new_session=True)
 
 
-def ensure_daemon(wait_s: float = 60.0, log_path: Path | None = None) -> dict:
-    """broker 就绪（健康复用/死了拉起）→ 返回 broker.json 内容（endpoint/token）。"""
+def ensure_daemon(wait_s: float = 60.0, log_path: Path | None = None,
+                  debug_port: int | None = None) -> dict:
+    """broker 就绪（健康复用/死了拉起）→ 返回 broker.json 内容（endpoint/token）。
+
+    debug_port：要求 daemon 带 CDP 调试口跑。daemon 活着但没带口时 fail-loud
+    （登录态在运行中的进程里，不静默杀进程重启——由调用方处置）。
+    """
     info = _read_broker_json()
     endpoint = info.get("endpoint") or DEFAULT_BROKER_ENDPOINT
-    if _port_open(endpoint):
+    broker_ok = _port_open(endpoint)
+    cdp_ok = debug_port is None or _port_open(f"http://127.0.0.1:{debug_port}")
+    if broker_ok and cdp_ok:
         return info or {"endpoint": endpoint}
+    if broker_ok and not cdp_ok:
+        raise MaloError(
+            f"malo daemon 在跑（{endpoint}）但 CDP 调试口 {debug_port} 未开。"
+            f"该进程内可能挂着带登录态的 session，不自动杀；确认无需保留后执行："
+            f"pkill -f 'malo.*--mode=daemon' 再重跑（本次会带调试口拉起）。")
     print(f"[malo] daemon 不在（{endpoint}），后台拉起（{MALO_REPO}）")
-    _spawn_daemon(started_by="python-client", log_path=log_path or DEFAULT_LOG)
+    _spawn_daemon(started_by="python-client", log_path=log_path or DEFAULT_LOG,
+                  debug_port=debug_port)
     deadline = time.time() + wait_s
     while time.time() < deadline:
-        if _port_open(endpoint, timeout=1.0):
+        if _port_open(endpoint, timeout=1.0) and (
+            debug_port is None or _port_open(f"http://127.0.0.1:{debug_port}", timeout=1.0)
+        ):
             # 新实例会重写 broker.json；端点通了但文件没刷新 = 异常，如实报
             fresh = _read_broker_json()
             if fresh.get("endpoint"):
