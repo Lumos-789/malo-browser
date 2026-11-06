@@ -27,6 +27,7 @@
   },
   "files": [
     "index.js",
+    "clients/",
     "cordis.patch.yml",
     "docs/",
     "schemas/",
