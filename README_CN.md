@@ -461,7 +461,8 @@ scripts/
   不在外部网卡上监听。
 - 按模式决定是否开窗：record / autorun / headless 默认不开；`npm start` 开一个可见但
   不抢焦点的 Stage；`watch`/`login` 开人工接管窗口。macOS 非交互模式切到 accessory
-  激活策略并隐藏 Dock 图标。
+  激活策略并隐藏 Dock 图标；有可见窗口期间 Dock 会亮出图标（被挡住的窗口点 Dock
+  即可调回最前），窗口全部收起后图标自动消失。
 - malo daemon 会一直运行到被停止，写 `~/.malo-browser`（broker.json 0600、Chromium
   profile 数据、每 session 的 downloads/artifacts），匿名 session 关闭时删除自己的
   partition。

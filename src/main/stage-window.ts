@@ -1,4 +1,5 @@
 import { BaseWindow, WebContentsView } from "electron";
+import { dockPresenceHidden, dockPresenceShown } from "./windows/dock-presence";
 
 export type ShowMode = "hidden" | "inactive" | "offscreen" | "ghost" | "focused";
 
@@ -48,12 +49,16 @@ export function createStage(options: {
   if (options.showMode === "ghost") {
     window.setOpacity(0);
   }
+  if (options.showMode === "inactive" || options.showMode === "focused") {
+    dockPresenceShown(window);
+  }
 
   return {
     window,
     view,
     showMode: options.showMode,
     close() {
+      dockPresenceHidden(window);
       if (!window.isDestroyed()) window.destroy();
     },
   };

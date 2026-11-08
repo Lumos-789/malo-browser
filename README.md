@@ -534,7 +534,8 @@ scripts/
 - Opens windows depending on mode: none by default in record / autorun / headless;
   a visible, unfocused stage with `npm start`; the handoff window for `watch`/`login`.
   Non-interactive macOS modes switch to the accessory activation policy and hide the
-  Dock icon.
+  Dock icon; while any human-visible window is on screen the Dock icon is shown so a
+  buried window can be raised from the Dock, and it disappears again once none is left.
 - The malo daemon keeps running until stopped, writes `~/.malo-browser` (broker.json
   0600, Chromium profile data, per-session downloads/artifacts), and deletes anonymous
   session partitions when those sessions close.

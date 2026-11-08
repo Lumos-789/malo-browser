@@ -4,6 +4,7 @@ import { isHelpRequested, isVersionRequested, parseOptions, USAGE, type Options 
 import { runPhase0 } from "./phase0";
 import { launchApp } from "./app";
 import { launchMaloDaemon, type MaloDaemon } from "./malo";
+import { initDockPresence } from "./windows/dock-presence";
 
 function debug(message: string): void {
   if (process.env.DEMO_DEBUG) console.error(`[malo-browser] ${message}`);
@@ -67,6 +68,7 @@ if (process.platform === "darwin") {
       opts.mode === "stage" ||
       (opts.mode === "app" && !opts.autorun && !opts.headless && !opts.directorCheck);
     app.setActivationPolicy(interactive ? "regular" : "accessory");
+    initDockPresence({ dynamic: !interactive });
     debug("activation policy set");
   } catch (error) {
     console.error(`[malo-browser] 设置激活策略失败：${(error as Error).message}`);

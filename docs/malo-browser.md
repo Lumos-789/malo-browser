@@ -446,9 +446,11 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/login \
 
 ## 焦点与窗口
 
-daemon 在 macOS 使用 `accessory` 激活策略并隐藏 Dock，不创建可见窗口，不调用 `activate`，
+daemon 在 macOS 使用 `accessory` 激活策略并隐藏 Dock，不创建可见窗口，不编程激活应用、
 不切换 Space。session 的 `WebContentsView` 放在隐藏 `BaseWindow` 中，系统窗口列表中
-`onscreen=false`。
+`onscreen=false`。人眼可见的窗口（`watch` / `login` 接管窗口）出现期间，Dock 会临时亮出
+图标，被别的应用挡住的窗口点 Dock 图标即可调回最前——这是唯一的前台切换，且由用户点击
+触发；窗口全部收起后图标自动隐藏，纯后台期间仍然无图标。
 
 需要给人看的时候才进入 `watch` / `login`，其余时间只有隐藏窗口和按需截图。
 人工接管窗口带原生标题栏，可以拖动和缩放，顶部还有一条浏览器工具条：后退、前进、

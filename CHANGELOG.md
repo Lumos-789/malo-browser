@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.9
+
+- **Human-visible windows now get a Dock icon while they are on screen.** The daemon
+  keeps running as an accessory app exactly as before (no Dock icon, no focus stealing,
+  no programmatic activation), but the moment a session window is shown for a human
+  (`watch` / login handoff) the macOS Dock icon appears, so a window buried behind
+  other apps can be raised again by clicking it; the icon disappears once no visible
+  window is left. Offscreen and ghost windows never surface an icon and recordings
+  stay fully headless. The only focus change is the one the user makes by clicking
+  the Dock icon.
+
 ## 0.1.8
 
 - **New profile login import: `POST /v1/profiles/:name/import`.** Seeds a persistent

@@ -1,6 +1,7 @@
 import { BaseWindow, WebContentsView, screen } from "electron";
 import type { WindowMode } from "../../shared/types";
 import { BrowserToolbar, TOOLBAR_HEIGHT } from "./browser-toolbar";
+import { dockPresenceHidden, dockPresenceShown } from "./dock-presence";
 
 export type StageOptions = {
   width: number;
@@ -63,6 +64,8 @@ export class StageWindow {
     else this.window.showInactive();
     if (mode === "offscreen") this.window.setPosition(-12000, -12000, false);
     if (mode === "ghost") this.window.setOpacity(0);
+    if (mode === "inactive" || mode === "focused") dockPresenceShown(this.window);
+    else dockPresenceHidden(this.window);
   }
 
   showForHuman(mode: "inactive" | "focused"): void {
@@ -76,10 +79,12 @@ export class StageWindow {
     );
     if (mode === "focused") this.window.show();
     else this.window.showInactive();
+    dockPresenceShown(this.window);
   }
 
   hide(): void {
     if (!this.window.isDestroyed()) this.window.hide();
+    dockPresenceHidden(this.window);
   }
 
   isVisible(): boolean {
@@ -114,6 +119,7 @@ export class StageWindow {
   }
 
   close(): void {
+    dockPresenceHidden(this.window);
     this.toolbar?.destroy();
     if (!this.window.isDestroyed()) this.window.destroy();
   }
