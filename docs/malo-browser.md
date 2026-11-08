@@ -141,6 +141,19 @@ curl -X DELETE -H "x-malo-lease-token: $LEASE_TOKEN" \
 清理正在被 session 使用的 profile 会返回 409 `E_PROFILE_LOCKED`，先关闭这些 session。
 工具调用里同样可用 `profiles`（`{"action":"list"}` / `{"action":"clear","name":"work"}`）。
 
+从已登录的 Chromium 导入登录态：`POST /v1/profiles/:name/import` 连源浏览器回环
+`cdp_url` 的 DevTools 端点实时拉 cookie，写进该 profile 的分区；可选 `domains` 白名单
+与 `session_cookie_ttl_days`（默认 180）。导入只合并不清空已有状态，也只迁 cookie
+（localStorage / IndexedDB 留在源浏览器）；源浏览器连不上 → 502
+`E_IMPORT_SOURCE_UNREACHABLE`，域过滤后 0 条 → 400 `E_IMPORT_EMPTY`：
+
+```bash
+curl -X POST http://127.0.0.1:7411/v1/profiles/work/import \
+  -H "x-malo-lease-token: $LEASE_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"cdp_url":"http://127.0.0.1:9223","domains":["example.com"]}'
+```
+
 ## Agent 工具
 
 Agent 不需要自己猜接口。lease endpoint 提供一份工具清单：
@@ -423,7 +436,7 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/login \
 - 失败判定看 `error_selector` 或页面上的常见错误文案，返回 `reason=login_error` 而不是空转重试
 - 凭据只存在于本次调用内存：不落盘、不进事件、不回显；快照里密码框的 `value` 固定为空串并标记 `sensitive: true`（`[redacted]` 只出现在 `interactive[].text`）
 - 登录态只有指定 `profile` 时才保留，未指定就随 session 一起清掉
-- `watch` 成功后窗口自动隐藏，agent 继续用同一个 session；`keep_visible: true` 可留给人继续操作
+- `login` 成功后窗口自动隐藏，agent 继续用同一个 session；`keep_visible: true` 可留给人继续操作；`watch` 打开的窗口保持可见，显式再调 `watch`（`show:false`）才收起
 - 超时的人工接管窗口不会自动关闭，人处理完再调 `watch` 收起
 
 ## 安全与资源边界

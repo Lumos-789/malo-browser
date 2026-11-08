@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.11
+
+- **文档与实现对齐（无行为变化）。**`SKILL.md` 不再把 login 的自动隐藏写到 `watch`
+  头上——`watch` 窗口保持可见直到显式再调 `watch`（`show:false`）收起，`login`
+  成功才自动隐藏（`keep_visible: true` 例外），与两版 README 一致；`docs/malo-browser.md`
+  登录交接规则里的同款失实一并改正，并补上 0.1.8 起存在的
+  `POST /v1/profiles/:name/import`（说明 + curl 示例）；`README_CN.md` 补译英文版
+  0.1.8 起就有的「Profile 登录态导入」整章（参数、返回字段、错误码、隐私边界）；
+  `login-import.ts` 去掉两个无外部消费者的 `export` 修饰符。
+
 ## 0.1.10
 
 - **`POST /v1/profiles/:name/import` 的 `domains` 改为逐项校验、fail-loud。**此前

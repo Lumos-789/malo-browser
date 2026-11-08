@@ -86,10 +86,12 @@ subscription are missed. Scope: the CDP session attaches to the page target, so 
 (cross-process iframe) and Service Worker requests are never captured.
 
 Login walls and human checks: `watch` shows the real page in an inactive window
-(no focus steal, auto-hides after success) with a native title bar and a browser
-toolbar (address bar plus back/forward/reload), and `login` either fills one-shot
-credentials or waits for the human handoff. Credentials stay in memory and are
-never written to events or responses.
+(no focus steal; it stays visible until it is hidden explicitly, i.e. another
+`watch` call with `show:false`) with a native title bar and a browser toolbar
+(address bar plus back/forward/reload), and `login` either fills one-shot
+credentials or waits for the human handoff — a successful `login` hides the
+handoff window again unless `keep_visible: true`. Credentials stay in memory and
+are never written to events or responses.
 
 Persistent login state: create a session with `{"profile":"work"}` to keep
 cookies and storage across sessions and daemon restarts; omit it and the session

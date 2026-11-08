@@ -335,6 +335,32 @@ DNS rebinding）；只接受 JSON、请求体上限 1MB；broker / lease / sessi
 只允许 `http:` / `https:` 导航，拒绝 URL 内嵌 credentials；`window.open` 与权限请求默认
 拒绝。旧版 `x-pagehand-*` token 头仍被接受，新脚本请用 `x-malo-*`。
 
+### Profile 登录态导入
+
+`POST /v1/profiles/:name/import` 从另一个 Chromium 的 DevTools 端点实时读取 cookie
+并写进持久 profile：已登录的日常 Chrome 无需重新输入密码，就能把登录态交给一个 malo
+profile：
+
+```bash
+curl -X POST http://127.0.0.1:7411/v1/profiles/work/import \
+  -H "x-malo-lease-token: $LEASE_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"cdp_url":"http://127.0.0.1:9223"}'
+```
+
+请求体：`cdp_url`（必填，只允许回环 `http://`）、`domains`（可选白名单，如
+`["example.com","example.org"]`——cookie 的域与条目相等、是其子域或父域即算匹配）、
+`session_cookie_ttl_days`（默认 180；session cookie 会被改写成持久 cookie，让导入的
+登录态活过 daemon 重启；`0` 表示保持 session-only）。daemon 连上源浏览器的
+browser-level WebSocket 调 `Storage.getCookies`，把每条 cookie 经目标 profile 分区的
+Electron cookie store 写入，返回
+`{ profile, created, source, cookies_total, cookies_matched, cookies_written, cookies_failed, failed }`
+（`failed` 最多列 20 条逐 cookie 写入错误，例如过不了 Chromium 前缀规则的 `__Host-`
+cookie；`cookies_failed` 统计的是封顶后的列表，不是全部失败数）。导入只合并不清空
+profile 已有状态；服务端已过期的登录仍然需要真实重新登录。源浏览器连不上 → 502
+`E_IMPORT_SOURCE_UNREACHABLE`；域过滤后 0 条 → 400 `E_IMPORT_EMPTY`。只迁移 cookie，
+localStorage、IndexedDB 与 HTTP cache 都留在源浏览器。
+
 ### assert 与 run_steps 判决
 
 断言没通过是业务判决，不是服务坏了。`assert` 返回 **HTTP 200**，判决在 result 上：

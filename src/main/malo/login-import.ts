@@ -90,7 +90,7 @@ export function cookieToDetails(
   return details;
 }
 
-export async function fetchCdpCookies(rawUrl: string, timeoutMs = 10_000): Promise<CdpCookie[]> {
+async function fetchCdpCookies(rawUrl: string, timeoutMs = 10_000): Promise<CdpCookie[]> {
   const url = validateCdpUrl(rawUrl);
   const base = `${url.protocol}//${url.host}`;
   let wsUrl: string | undefined;
@@ -149,7 +149,7 @@ export async function fetchCdpCookies(rawUrl: string, timeoutMs = 10_000): Promi
 
 const MAX_REPORTED_FAILURES = 20;
 
-export async function writeCookiesToPartition(
+async function writeCookiesToPartition(
   partition: Session,
   cookies: CdpCookie[],
   sessionTtlDays: number,
