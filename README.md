@@ -381,7 +381,7 @@ them session-only). The daemon connects to the source's browser-level WebSocket 
 profile's partition, and returns
 `{ profile, created, source, cookies_total, cookies_matched, cookies_written, cookies_failed, failed }`
 (`failed` lists up to 20 per-cookie write errors, e.g. `__Host-` cookies that fail
-Chromium's prefix rules). Importing merges into whatever the profile already has; it
+Chromium's prefix rules; `cookies_failed` counts that capped list, not all failures). Importing merges into whatever the profile already has; it
 never clears existing state, and cookies whose login has expired on the server side still
 need a real re-login. Source unreachable → 502 `E_IMPORT_SOURCE_UNREACHABLE`; zero
 cookies matched → 400 `E_IMPORT_EMPTY`. Only cookies move; localStorage, IndexedDB and

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.10
+
+- **`POST /v1/profiles/:name/import` 的 `domains` 改为逐项校验、fail-loud。**此前
+  `[""]` / `[123]` 这类非法条目会被静默过滤成空数组，而空数组在域过滤层等于「匹配
+  所有域」——即调用方以为只迁指定域的 cookie，实际全量导入了所有域（隐私边界被击穿）。
+  现在任一非法条目直接 400 `E_BAD_REQUEST` 并点名非法项；`domains` 传非数组或空数组
+  仍报 400。同时把 `.zcode-plugin` / `.codex-plugin` manifest 与 `package-lock.json`
+  根版本从滞留的 0.1.7 同步到当前版本，`SKILL.md` 动作工具枚举补上 0.1.7 新增的
+  `upload_file`。
+
 ## 0.1.9
 
 - **Human-visible windows now get a Dock icon while they are on screen.** The daemon

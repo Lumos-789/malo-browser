@@ -157,12 +157,16 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
       if (typeof body.cdp_url !== "string" || body.cdp_url.trim() === "") {
         throw new BadRequest("cdp_url 必须是非空字符串（源 Chrome 的 CDP 端点，如 http://127.0.0.1:9223）");
       }
-      const domains =
-        Array.isArray(body.domains) && body.domains.length > 0
-          ? body.domains.filter((domain): domain is string => typeof domain === "string" && domain !== "")
-          : undefined;
-      if (body.domains !== undefined && domains === undefined) {
-        throw new BadRequest("domains 必须是非空字符串数组");
+      let domains: string[] | undefined;
+      if (body.domains !== undefined) {
+        if (!Array.isArray(body.domains) || body.domains.length === 0) {
+          throw new BadRequest("domains 必须是非空字符串数组");
+        }
+        const invalid = body.domains.find((domain) => typeof domain !== "string" || domain === "");
+        if (invalid !== undefined) {
+          throw new BadRequest(`domains 条目必须是非空字符串，非法项: ${JSON.stringify(invalid)}`);
+        }
+        domains = body.domains as string[];
       }
       const ttlDays =
         body.session_cookie_ttl_days === undefined ? 180 : Number(body.session_cookie_ttl_days);

@@ -71,7 +71,7 @@ Agents discover page tools with `GET /v1/tools` and invoke them through
 `POST /v1/sessions/:id/tools/<tool>`. Use `snapshot` for structured page content
 (text, headings, links, buttons, inputs, forms, tables, frames, dialogs and
 interactive selectors), `extract` for targeted reads, and the action tools for
-click/fill/press/hover/select/focus/scroll/history. `assert` checks
+click/fill/upload_file/press/hover/select/focus/scroll/history. `assert` checks
 visible/hidden/text/value/url/count with retry and returns per-check
 expected/actual plus a failure screenshot; a failed assertion is HTTP 200 with
 `result.ok: false` (not a 5xx), and `run_steps` reports its verdict the same way,

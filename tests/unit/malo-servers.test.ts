@@ -583,6 +583,25 @@ describe("lease server", () => {
     });
     expect(badTtl.status).toBe(400);
 
+    const emptyDomain = await request(harness.server.port, {
+      method: "POST",
+      path: "/v1/profiles/work/import",
+      headers: leaseHeaders(),
+      body: JSON.stringify({ cdp_url: "http://127.0.0.1:9223", domains: [""] }),
+    });
+    expect(emptyDomain.status).toBe(400);
+    expect(JSON.parse(emptyDomain.body).error.code).toBe("E_BAD_REQUEST");
+
+    const nonStringDomain = await request(harness.server.port, {
+      method: "POST",
+      path: "/v1/profiles/work/import",
+      headers: leaseHeaders(),
+      body: JSON.stringify({ cdp_url: "http://127.0.0.1:9223", domains: [123] }),
+    });
+    expect(nonStringDomain.status).toBe(400);
+    expect(JSON.parse(nonStringDomain.body).error.code).toBe("E_BAD_REQUEST");
+    expect(vi.mocked(harness.manager.importProfileLogin)).toHaveBeenCalledTimes(1);
+
     vi.mocked(harness.manager.importProfileLogin).mockRejectedValueOnce(
       new DemoError("E_IMPORT_SOURCE_UNREACHABLE", "连不上源 CDP"),
     );
