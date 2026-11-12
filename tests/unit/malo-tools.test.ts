@@ -163,6 +163,43 @@ describe("malo-browser tool manifest", () => {
     expect(MALO_TOOLS.length).toBeGreaterThanOrEqual(16);
   });
 
+  it("extract attributes 逐项校验：非字符串/空串条目 400 点名，不再静默丢弃", async () => {
+    const session = fakeSession();
+    await expect(
+      invokeMaloTool(
+        "extract",
+        { selector: "#x", mode: "attributes", attributes: ["href", 42] },
+        session,
+      ),
+    ).rejects.toMatchObject({
+      code: "E_BAD_REQUEST",
+      message: expect.stringContaining(`非法项: 42`),
+    });
+    await expect(
+      invokeMaloTool(
+        "extract",
+        { selector: "#x", mode: "attributes", attributes: ["href", ""] },
+        session,
+      ),
+    ).rejects.toMatchObject({
+      code: "E_BAD_REQUEST",
+      message: expect.stringContaining(`非法项: ""`),
+    });
+    await expect(
+      invokeMaloTool("extract", { selector: "#x", mode: "attributes", attributes: "href" }, session),
+    ).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    expect(session.extract).not.toHaveBeenCalled();
+
+    await invokeMaloTool(
+      "extract",
+      { selector: "#x", mode: "attributes", attributes: ["href", "data-id"] },
+      session,
+    );
+    expect(session.extract).toHaveBeenCalledWith(
+      expect.objectContaining({ attributes: ["href", "data-id"] }),
+    );
+  });
+
   it("publishes network capture schemas with typed prefixes and a bounded window", () => {
     const captureTool = MALO_TOOLS.find((tool) => tool.name === "network_capture");
     expect(captureTool).toBeDefined();

@@ -27,14 +27,30 @@ export function validateCdpUrl(raw: string): URL {
   if (url.protocol !== "http:") {
     throw new DemoError("E_BAD_REQUEST", `cdp_url 只允许 http（本机 CDP 端点）：${raw}`);
   }
+  assertLoopbackHost(url, "cdp_url", raw);
+  return url;
+}
+
+function assertLoopbackHost(url: URL, what: string, raw: string): void {
   const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (!LOOPBACK_HOSTS.has(host)) {
     throw new DemoError(
       "E_BAD_REQUEST",
-      `cdp_url 只允许回环地址（127.0.0.1 / localhost / ::1），拒绝：${raw}`,
+      `${what} 只允许回环地址（127.0.0.1 / localhost / ::1），拒绝：${raw}`,
     );
   }
-  return url;
+}
+
+// /json/version 返回的 webSocketDebuggerUrl 来自源端点，不能默认它仍指向回环：
+// 连接前与 cdp_url 同口径复核，否则非回环地址会从这跳绕开安全边界。
+function assertWsUrlLoopback(raw: string): void {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new DemoError("E_BAD_REQUEST", `webSocketDebuggerUrl 无效：${raw}`);
+  }
+  assertLoopbackHost(url, "webSocketDebuggerUrl", raw);
 }
 
 function domainMatches(cookieDomain: string, wanted: string): boolean {
@@ -108,6 +124,7 @@ async function fetchCdpCookies(rawUrl: string, timeoutMs = 10_000): Promise<CdpC
   if (!wsUrl) {
     throw new DemoError("E_IMPORT_SOURCE_UNREACHABLE", `源 CDP ${base} 未返回 webSocketDebuggerUrl`);
   }
+  assertWsUrlLoopback(wsUrl);
   return await new Promise<CdpCookie[]>((resolve, reject) => {
     const ws = new WebSocket(wsUrl as string);
     const fail = (message: string) => {
@@ -125,11 +142,22 @@ async function fetchCdpCookies(rawUrl: string, timeoutMs = 10_000): Promise<CdpC
     );
     ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: "Storage.getCookies" }));
     ws.onmessage = (event) => {
-      const msg = JSON.parse(String(event.data)) as {
+      // 坏帧（非 JSON 文本帧或二进制帧）只废掉本次 import，不允许异常
+      // 漏出回调把整个 daemon 带下桌。
+      let msg: {
         id?: number;
         result?: { cookies?: CdpCookie[] };
         error?: { message?: string };
       };
+      try {
+        if (typeof event.data !== "string") {
+          throw new Error(`非文本帧（${typeof event.data}）`);
+        }
+        msg = JSON.parse(event.data);
+      } catch (error) {
+        fail(`源 CDP ${base} Storage.getCookies 帧无法解析：${(error as Error).message}`);
+        return;
+      }
       if (msg.id !== 1) return;
       clearTimeout(timer);
       try {

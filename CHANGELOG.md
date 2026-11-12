@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.12
+
+- **登录态导入的坏帧不再能炸掉 daemon。**`POST /v1/profiles/:name/import` 连接源 CDP
+  的 WebSocket 后，一条非 JSON 文本帧或二进制帧会在 `onmessage` 里抛 `SyntaxError` 并
+  升级为进程级 uncaughtException——daemon 的 fatal 处理走 `app.exit(2)`，整个进程连同
+  所有 lease/session 一起下桌。现在坏帧只废掉本次 import：以
+  `E_IMPORT_SOURCE_UNREACHABLE`（502）reject 并关闭连接，进程存活。
+- **`webSocketDebuggerUrl` 连接前补回环复核。**该地址来自源端点 `/json/version` 响应，
+  此前只校验了 HTTP `cdp_url` 的回环边界就直接连 WS，「loopback only」安全边界在 WS
+  这一跳有个缺口。现在与 `cdp_url` 同口径复核 hostname，非
+  127.0.0.1 / localhost / ::1 直接 400 `E_BAD_REQUEST` 拒绝，且不发起 WS 连接。
+- **`clearProfile` 与并发 `create` 同名 profile 的竞态消除。**此前 clearProfile 入口读
+  一次 `activeCount` 后，在 clearStorageData / clearCache / 删分区目录 / 删记录的 await
+  窗口里穿插同名 create，新 session 会落进正被清空的分区、profiles.json 记录被删、磁盘
+  留孤儿分区。现在按 profile 名做进程内互斥：clear 的「占用检查+清理」关键段与 create
+  的「登记占用」段共用同一把锁，create 在启动 BrowserSession 之前先登记「即将占用」，
+  clear 因此看得见还没 touch 的并发 create（报 `E_PROFILE_LOCKED`），create 失败即撤销
+  登记不空拒后续 clear。
+- **`extract` 的 `attributes` 逐项校验、fail-loud。**此前非字符串条目被 filter 静默
+  丢弃，与同文件 `domains` / `url_prefixes` / `upload_file.files` 的逐项 400 口径不一致；
+  现在任一非字符串/空串条目直接 400 `E_BAD_REQUEST` 并点名非法项。
+
 ## 0.1.11
 
 - **文档与实现对齐（无行为变化）。**`SKILL.md` 不再把 login 的自动隐藏写到 `watch`

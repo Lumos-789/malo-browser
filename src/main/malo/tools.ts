@@ -115,11 +115,17 @@ export async function invokeMaloTool(
       if (args.attributes !== undefined && !Array.isArray(args.attributes)) {
         throw bad("attributes 必须是字符串数组");
       }
+      if (Array.isArray(args.attributes)) {
+        const invalid = args.attributes.find((item) => typeof item !== "string" || item === "");
+        if (invalid !== undefined) {
+          throw bad(`attributes 条目必须是非空字符串，非法项: ${JSON.stringify(invalid)}`);
+        }
+      }
       result = await session.extract({
         selector: readString(args, "selector")!,
         mode,
         attributes: Array.isArray(args.attributes)
-          ? args.attributes.filter((item): item is string => typeof item === "string")
+          ? (args.attributes as string[])
           : undefined,
         maxChars: readInteger(args, "max_chars", 4_000, 0, 20_000),
         all: args.all !== false,

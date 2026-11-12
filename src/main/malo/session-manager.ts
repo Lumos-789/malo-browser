@@ -18,6 +18,12 @@ import {
 export class SessionManager {
   private readonly sessions = new Map<string, BrowserSession>();
   private creating = 0;
+  // clearProfile 与带 profile 的 create 按 profile 名串行的关键段；锁的 entry
+  // 是已吞掉结果的上一个关键段，串行链空闲时留在 Map 里（键数受 profile 名约束）。
+  private readonly profileLocks = new Map<string, Promise<void>>();
+  // 已登记占用、但还没跑完 BrowserSession.create 的 profile：clearProfile 的
+  // 占用检查必须看得见这些并发 create，否则会把新 session 脚下的分区清掉。
+  private readonly creatingProfiles = new Map<string, number>();
 
   constructor(
     private readonly options: {
@@ -47,7 +53,14 @@ export class SessionManager {
     }
     const profile = input.profile === undefined ? undefined : validateProfileName(input.profile);
     this.creating += 1;
+    let profileReserved = false;
     try {
+      if (profile !== undefined) {
+        await this.withProfileLock(profile, async () => {
+          this.bumpCreatingProfiles(profile, 1);
+          profileReserved = true;
+        });
+      }
       const session = await BrowserSession.create({
         leaseId: this.options.leaseId,
         name: input.name,
@@ -75,6 +88,14 @@ export class SessionManager {
       };
     } finally {
       this.creating -= 1;
+      // 成功路径上 touch 已把占用转交给 activeCount，失败路径上没有 touch；
+      // 两条路径都要在锁内撤销 pending 登记，clearProfile 才不会对着已放弃的 create 空拒。
+      if (profileReserved && profile !== undefined) {
+        const name = profile;
+        await this.withProfileLock(name, async () => {
+          this.bumpCreatingProfiles(name, -1);
+        });
+      }
     }
   }
 
@@ -126,21 +147,24 @@ export class SessionManager {
 
   async clearProfile(rawName: string): Promise<{ profile: string; existed: boolean }> {
     const name = validateProfileName(rawName);
-    const active = this.options.profiles.activeCount(name);
-    if (active > 0) {
-      throw new DemoError(
-        "E_PROFILE_LOCKED",
-        `profile ${name} 仍有 ${active} 个 session 在使用，先关闭这些 session 再清理`,
-      );
-    }
-    const partitionSession = electronSession.fromPartition(profilePartition(name));
-    await partitionSession.clearStorageData();
-    await partitionSession.clearCache();
-    if (this.options.partitionsDir !== undefined) {
-      await removePartitionDir(this.options.partitionsDir, profilePartition(name));
-    }
-    const existed = await this.options.profiles.remove(name);
-    return { profile: name, existed };
+    return this.withProfileLock(name, async () => {
+      const active =
+        this.options.profiles.activeCount(name) + (this.creatingProfiles.get(name) ?? 0);
+      if (active > 0) {
+        throw new DemoError(
+          "E_PROFILE_LOCKED",
+          `profile ${name} 仍有 ${active} 个 session 在使用，先关闭这些 session 再清理`,
+        );
+      }
+      const partitionSession = electronSession.fromPartition(profilePartition(name));
+      await partitionSession.clearStorageData();
+      await partitionSession.clearCache();
+      if (this.options.partitionsDir !== undefined) {
+        await removePartitionDir(this.options.partitionsDir, profilePartition(name));
+      }
+      const existed = await this.options.profiles.remove(name);
+      return { profile: name, existed };
+    });
   }
 
   async importProfileLogin(
@@ -161,5 +185,25 @@ export class SessionManager {
     } finally {
       if (session.profile !== null) this.options.profiles.releaseActive(session.profile);
     }
+  }
+
+  /** 同名 profile 的关键段串行执行；前一段无论成败，后一段都接着跑。 */
+  private withProfileLock<T>(name: string, critical: () => Promise<T>): Promise<T> {
+    const previous = this.profileLocks.get(name) ?? Promise.resolve();
+    const result = previous.then(critical);
+    this.profileLocks.set(
+      name,
+      result.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return result;
+  }
+
+  private bumpCreatingProfiles(name: string, delta: 1 | -1): void {
+    const next = (this.creatingProfiles.get(name) ?? 0) + delta;
+    if (next > 0) this.creatingProfiles.set(name, next);
+    else this.creatingProfiles.delete(name);
   }
 }
