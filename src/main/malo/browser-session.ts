@@ -477,7 +477,11 @@ export class BrowserSession {
     };
   }
 
-  async observe(mode: "light" | "screenshot", maxChars = 2_000): Promise<MaloObservation> {
+  async observe(
+    mode: "light" | "screenshot",
+    maxChars = 2_000,
+    clipSelector?: string,
+  ): Promise<MaloObservation> {
     this.assertOpen();
     this.touch();
     const requested = Number.isFinite(maxChars) ? Math.floor(maxChars) : 2_000;
@@ -514,14 +518,51 @@ export class BrowserSession {
       console_errors: this.consoleErrors.slice(-5),
     };
     if (mode === "light") return base;
+    let clip: { x: number; y: number; width: number; height: number; scale: number } | undefined;
+    let clipRect: { x: number; y: number; width: number; height: number } | undefined;
+    if (clipSelector !== undefined) {
+      if (typeof clipSelector !== "string" || clipSelector.trim() === "") {
+        throw new DemoError("E_BAD_REQUEST", "clip_selector 必须是非空字符串");
+      }
+      const measured = await this.driver.evaluate<{
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      } | null>(`(() => {
+        const el = document.querySelector(${JSON.stringify(clipSelector)});
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        // clip 用文档坐标：视口矩形 + 滚动偏移
+        return {
+          x: Math.round(rect.x + window.scrollX),
+          y: Math.round(rect.y + window.scrollY),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        };
+      })()`);
+      if (!measured) {
+        throw new DemoError("E_SELECTOR_NOT_FOUND", `找不到可截图元素 ${clipSelector}`, {
+          details: { selector: clipSelector },
+        });
+      }
+      clipRect = measured;
+      clip = { ...measured, scale: 1 };
+    }
     const shot = await this.driver.send<{ data: string }>("Page.captureScreenshot", {
       format: "png",
       fromSurface: true,
+      ...(clip ? { clip } : {}),
     });
-    this.record("observe.screenshot", { bytes: Buffer.byteLength(shot.data, "base64") });
+    this.record("observe.screenshot", {
+      bytes: Buffer.byteLength(shot.data, "base64"),
+      clip: clipRect ?? null,
+    });
     return {
       ...base,
       screenshot: { mime_type: "image/png", base64: shot.data },
+      ...(clipRect ? { screenshot_clip: { selector: clipSelector, ...clipRect } } : {}),
     };
   }
 

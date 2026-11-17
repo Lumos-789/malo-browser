@@ -20,6 +20,11 @@
     session / partition 生效。
   - `extract` 的 `max_chars` 上限 20 000 → 2 000 000（部署端并行会话先行改动，
     随本轮回流；`observe` 的 20 000 上限不变）。
+  - `observe` 的 `clip_selector`（只截某个元素，0.1.8 前部署端先行功能）回流：
+    `observe(mode=screenshot, clip_selector)` 与 `GET /observe?clip_selector=` 均可，
+    返回 `screenshot_clip` 实裁矩形；选择器不存在/尺寸 0 → `E_SELECTOR_NOT_FOUND`
+    不静默退回整屏。业务侧（yewu-shot）依赖 `/health` 的
+    `observe.screenshot_clip` 能力位做启动前校验，此前源码仓缺此功能导致能力位为空。
 
 ## 0.1.12
 

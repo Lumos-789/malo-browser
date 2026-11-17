@@ -278,7 +278,8 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
           throw new BadRequest("mode 只能是 light 或 screenshot");
         }
         const maxChars = readQueryInteger(url.searchParams.get("max_chars"), "max_chars", 2_000, 0, 20_000);
-        sendJson(res, 200, await session.observe(mode, maxChars));
+        const clipSelector = url.searchParams.get("clip_selector") ?? undefined;
+        sendJson(res, 200, await session.observe(mode, maxChars, clipSelector));
         return;
       }
       if (op === "actions" && req.method === "POST") {

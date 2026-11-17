@@ -23,7 +23,7 @@ import type {
 
 export type MaloToolSession = {
   navigate(url: string, timeoutMs?: number, settleMs?: number): Promise<MaloLightObservation>;
-  observe(mode: "light" | "screenshot", maxChars?: number): Promise<MaloObservation>;
+  observe(mode: "light" | "screenshot", maxChars?: number, clipSelector?: string): Promise<MaloObservation>;
   snapshot(maxChars?: number, maxItems?: number): Promise<MaloSnapshot>;
   extract(input: {
     selector: string;
@@ -98,7 +98,11 @@ export async function invokeMaloTool(
     case "observe": {
       const mode = args.mode ?? "light";
       if (mode !== "light" && mode !== "screenshot") throw bad("mode 只能是 light 或 screenshot");
-      result = await session.observe(mode, readInteger(args, "max_chars", 2_000, 0, 20_000));
+      result = await session.observe(
+        mode,
+        readInteger(args, "max_chars", 2_000, 0, 20_000),
+        readString(args, "clip_selector", false),
+      );
       break;
     }
     case "snapshot":

@@ -142,6 +142,14 @@ export type MaloObservation = MaloLightObservation & {
     mime_type: "image/png";
     base64: string;
   };
+  /** 只在使用 clip_selector 时出现：实际裁剪到的文档坐标矩形 */
+  screenshot_clip?: {
+    selector?: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
 };
 
 export type MaloSnapshot = {

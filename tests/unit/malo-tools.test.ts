@@ -92,6 +92,12 @@ describe("malo-browser tool manifest", () => {
     await invokeMaloTool("snapshot", { max_chars: 100, max_items: 5 }, session);
     expect(session.snapshot).toHaveBeenCalledWith(100, 5);
 
+    await invokeMaloTool("observe", { mode: "screenshot", clip_selector: "#player" }, session);
+    expect(session.observe).toHaveBeenCalledWith("screenshot", 2_000, "#player");
+
+    await invokeMaloTool("observe", { mode: "light" }, session);
+    expect(session.observe).toHaveBeenLastCalledWith("light", 2_000, undefined);
+
     await invokeMaloTool(
       "assert",
       { visible: "#done", text: "Saved", url: "/done", timeout_ms: 300 },
@@ -153,6 +159,10 @@ describe("malo-browser tool manifest", () => {
     await expect(invokeMaloTool("navigate", {}, fakeSession())).rejects.toMatchObject({
       code: "E_BAD_REQUEST",
     });
+    // 负控：clip_selector 给了但为空串，不能静默退化成整屏截图
+    await expect(
+      invokeMaloTool("observe", { mode: "screenshot", clip_selector: "  " }, fakeSession()),
+    ).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
     await expect(invokeMaloTool("assert", {}, fakeSession())).rejects.toMatchObject({
       code: "E_BAD_REQUEST",
     });

@@ -38,6 +38,11 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
       properties: {
         mode: { type: "string", enum: ["light", "screenshot"], default: "light" },
         max_chars: { type: "integer", minimum: 0, maximum: 20000, default: 2000 },
+        clip_selector: {
+          type: "string",
+          description:
+            "CSS selector; when set with mode=screenshot, capture only that element's box (document coordinates).",
+        },
       },
       additionalProperties: false,
     },
