@@ -70,8 +70,17 @@ documented in `docs/malo-browser.md`.
 Agents discover page tools with `GET /v1/tools` and invoke them through
 `POST /v1/sessions/:id/tools/<tool>`. Use `snapshot` for structured page content
 (text, headings, links, buttons, inputs, forms, tables, frames, dialogs and
-interactive selectors), `extract` for targeted reads, and the action tools for
-click/fill/upload_file/press/hover/select/focus/scroll/history. `assert` checks
+interactive selectors), `extract` for targeted reads (mode `rect` returns element
+boxes with `x/y` as the center — feed those straight into click/drag coordinates),
+and the action tools for click/fill/drag/upload_file/press/hover/select/focus/
+scroll/history. `click` also accepts `text` (substring match, innermost visible
+element wins, `nth` picks among multiple) for controls with no usable selector —
+a bare `<span>编辑作品</span>` included. `fill` verifies the value landed: if the
+page swallows synthetic input (React-controlled fields can), JS-focus and
+native-setter fallbacks run, and a still-missing value fails with
+`E_FILL_NOT_LANDED` instead of a false success; `verify:false` opts out for pages
+that rewrite input. `drag` presses, moves in interpolated steps and releases —
+for sliders, crop boxes and other pointer-sequence components. `assert` checks
 visible/hidden/text/value/url/count with retry and returns per-check
 expected/actual plus a failure screenshot; a failed assertion is HTTP 200 with
 `result.ok: false` (not a 5xx), and `run_steps` reports its verdict the same way,

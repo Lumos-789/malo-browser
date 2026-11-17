@@ -226,6 +226,44 @@ export class ElectronPageDriver implements PageDriver {
     await this.send("Input.insertText", { text });
   }
 
+  /**
+   * 按下左键 → 插值移动 → 释放。步进间隔给页面事件循环喘息，滑块/裁切框
+   * 这类监听 pointer/mouse 序列的自定义组件靠逐步事件驱动，不是一步跳到位。
+   */
+  async drag(from: Point, to: Point, steps: number): Promise<void> {
+    await this.move(from);
+    await sleep(80);
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: from.x,
+      y: from.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    const interval = Math.max(8, Math.round(240 / steps));
+    for (let index = 1; index <= steps; index += 1) {
+      const progress = index / steps;
+      await this.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: from.x + (to.x - from.x) * progress,
+        y: from.y + (to.y - from.y) * progress,
+        button: "left",
+        buttons: 1,
+      });
+      await sleep(interval);
+    }
+    await sleep(60);
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: to.x,
+      y: to.y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+  }
+
   async uploadFiles(selector: string, files: string[]): Promise<void> {
     const document = await this.send<{ root: { nodeId: number } }>("DOM.getDocument", { depth: -1 });
     const found = await this.send<{ nodeId: number }>("DOM.querySelector", {

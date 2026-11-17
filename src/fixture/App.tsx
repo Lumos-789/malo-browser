@@ -17,12 +17,17 @@ const ORDERS: Order[] = [
   { id: 4, code: "SO-2026-1044", name: "西北渠道常规订单", region: "西安", amount: "¥64,200", status: "已复核", risk: false },
 ];
 
+const clampPercent = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
+
 export default function App() {
   const frozen = new URLSearchParams(window.location.search).get("compare") === "1";
   const [ready, setReady] = useState(false);
   const [count, setCount] = useState(0);
   const [query, setQuery] = useState("");
   const [clock, setClock] = useState(frozen ? "10:00:00" : "--:--:--");
+  const [title, setTitle] = useState("");
+  const [dragValue, setDragValue] = useState(0);
+  const [editOpened, setEditOpened] = useState(false);
 
   useEffect(() => {
     setReady(true);
@@ -121,6 +126,68 @@ export default function App() {
 
           <div className="progress">
             <div className="bar" />
+          </div>
+        </section>
+        {/* 自动化实验室：fill 兜底（覆盖层吞点击的受控输入）/ drag（pointer 滑块）/ click text（裸 span）*/}
+        <section className="panel" data-demo-id="publish-lab">
+          <div className="panel-head">
+            <h2>发布实验室</h2>
+            <div className="tools">
+              <span style={{ position: "relative", display: "inline-block" }}>
+                <input
+                  data-demo-id="title-input"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  maxLength={30}
+                  placeholder="填写作品标题"
+                  aria-label="作品标题"
+                />
+                <span
+                  data-demo-id="title-overlay"
+                  style={{ position: "absolute", inset: 0, display: "block" }}
+                  onClick={() => undefined}
+                />
+              </span>
+              <span data-demo-id="title-count">{title.length}/30</span>
+              <span data-demo-id="title-mirror">{title || "（空）"}</span>
+              <span role="button" tabIndex={0} onClick={() => setEditOpened(true)}>
+                编辑作品
+              </span>
+              <strong data-demo-id="edit-state">{editOpened ? "open" : "closed"}</strong>
+            </div>
+          </div>
+          <div
+            data-demo-id="drag-lab"
+            style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}
+          >
+            <div
+              data-demo-id="drag-track"
+              onPointerDown={(e) => {
+                e.currentTarget.setPointerCapture(e.pointerId);
+                const r = e.currentTarget.getBoundingClientRect();
+                setDragValue(clampPercent(((e.clientX - r.left) / r.width) * 100));
+              }}
+              onPointerMove={(e) => {
+                if (e.buttons !== 1) return;
+                const r = e.currentTarget.getBoundingClientRect();
+                setDragValue(clampPercent(((e.clientX - r.left) / r.width) * 100));
+              }}
+              style={{ position: "relative", width: 240, height: 24, background: "#d5d9e0", borderRadius: 12 }}
+            >
+              <span
+                data-demo-id="drag-knob"
+                style={{
+                  position: "absolute",
+                  left: `calc(${dragValue}% - 8px)`,
+                  top: 0,
+                  width: 16,
+                  height: 24,
+                  background: "#2f3542",
+                  borderRadius: 8,
+                }}
+              />
+            </div>
+            <strong data-demo-id="drag-value">{dragValue}</strong>
           </div>
         </section>
       </main>

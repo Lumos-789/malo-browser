@@ -191,7 +191,7 @@ export type MaloSnapshot = {
 
 export type MaloExtractResult = {
   selector: string;
-  mode: "text" | "html" | "attributes";
+  mode: "text" | "html" | "attributes" | "rect";
   count: number;
   matches: Array<{
     selector: string;
@@ -199,6 +199,8 @@ export type MaloExtractResult = {
     text?: string;
     html?: string;
     attributes?: Record<string, string>;
+    /** mode=rect：x/y 为中心点（可直接喂给 click/drag），left/top 为左上角 */
+    rect?: { x: number; y: number; left: number; top: number; width: number; height: number };
     visible: boolean;
   }>;
   truncated: boolean;
@@ -304,6 +306,10 @@ export type MaloLoginResult = {
 export type MaloClickAction = {
   type: "click";
   selector?: string;
+  /** 按可见文本定位（子串匹配、取最内层可见元素）；与 selector 同给时 selector 是搜索范围 */
+  text?: string;
+  /** text 命中多个时取第几个（从 1 起，默认 1） */
+  nth?: number;
   x?: number;
   y?: number;
   button?: "left" | "middle" | "right";
@@ -315,6 +321,18 @@ export type MaloFillAction = {
   selector: string;
   text: string;
   clear?: boolean;
+  /** 默认 true：回读元素值校验落地理，不落地报 E_FILL_NOT_LANDED；页面会改写输入时才关 */
+  verify?: boolean;
+};
+
+export type MaloDragAction = {
+  type: "drag";
+  from_x: number;
+  from_y: number;
+  to_x: number;
+  to_y: number;
+  /** 插值步数 1-100，默认 12；滑块/裁切框这类监听 pointer 序列的组件靠步进事件驱动 */
+  steps?: number;
 };
 
 export type MaloUploadFileAction = {
@@ -380,6 +398,7 @@ export type MaloSleepAction = {
 export type MaloAction =
   | MaloClickAction
   | MaloFillAction
+  | MaloDragAction
   | MaloUploadFileAction
   | MaloPressAction
   | MaloScrollAction

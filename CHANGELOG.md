@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.14
+
+- **fill 落地链：回执以元素真实值为准，不再报假成功。**判例是 ep014 抖音发布页作品
+  标题框——受控组件吞掉合成输入，fill 两次回 `filled 19 chars` 而值从未落地。现在
+  正路（click 聚焦 + selectAll/Backspace + CDP insertText）打完先回读元素值：
+  没落地换 JS `el.focus()` 重打；再不行用原生 value setter + `input`/`change` 事件
+  注入（React/Vue 受控组件的标准通路，绕过输入管线）；三层之后仍不符报
+  `E_FILL_NOT_LANDED`（HTTP 400，非敏感字段带期望/实际值证据）。密码框的值比对在
+  页面内完成只回 boolean——校验可用且明文永不回传（extract/assert 的脱敏口径不变）。
+  `verify:false` 显式关闭校验，留给会改写输入的页面。
+- **新增 `drag` action：按下 → 插值移动 → 释放。**滑块/裁切框这类监听 pointer/mouse
+  序列的自定义组件靠逐步事件驱动，一步跳到位不触发；`from_x/from_y/to_x/to_y` 四坐标
+  + `steps`（1-100，默认 12，步进带间隔），CDP `Input.dispatchMouseEvent` 全程左键。
+- **`click` 支持按可见文本定位：`text` + `nth`。**子串匹配、最内层可见元素优先（父容器
+  因包含子文本也会命中，点叶子才准）；与 `selector` 同给时 selector 是搜索范围。专治
+  无类名无 id 的裸 span（判例：抖音内容管理的「编辑作品」入口）。
+- **`extract` 新增 `mode: "rect"`。**返回元素盒子，`x/y` 为中心点可直接喂给
+  click/drag；`left/top/width/height` 齐全。此前 rect 只有 snapshot 的 interactive
+  才带，非交互元素（裸 span/滑块轨道）取不到坐标。
+- **fixture 增「发布实验室」**：覆盖层吞点击的受控输入（fill 兜底链靶场）、pointer
+  滑块（drag 靶场）、裸 span 按钮（click text 靶场）；smoke 补五段断言（兜底落地
+  19/30 计数、不可填元素 E_FILL_NOT_LANDED 负控、裸 span 点击、rect 提取、拖到 80%
+  档）。单测 291 绿（+3：drag CDP 序列、drag/extract rect manifest、text/verify 路由）。
+
 ## 0.1.13
 
 - **可见窗口一律带原生标题栏，行为一致。**演示舞台（scene 演示 / phase0 spike）与

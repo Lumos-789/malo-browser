@@ -84,6 +84,21 @@ describe("malo-browser tool manifest", () => {
     expect(tool!.input_schema.properties).toHaveProperty("files");
   });
 
+  it("declares drag with four finite coordinates and bounded steps", () => {
+    expect(MALO_TOOL_NAMES.has("drag")).toBe(true);
+    const tool = MALO_TOOLS.find((item) => item.name === "drag");
+    expect(tool).toBeDefined();
+    expect(tool!.input_schema.required).toEqual(["from_x", "from_y", "to_x", "to_y"]);
+    expect(tool!.input_schema.properties).toHaveProperty("steps");
+  });
+
+  it("declares extract with a rect mode for click/drag coordinates", () => {
+    const tool = MALO_TOOLS.find((item) => item.name === "extract");
+    expect(tool).toBeDefined();
+    const mode = tool!.input_schema.properties.mode as { enum?: string[] };
+    expect(mode.enum).toContain("rect");
+  });
+
   it("routes tool calls to page operations", async () => {
     const session = fakeSession();
     await invokeMaloTool("navigate", { url: "https://example.com", settle_ms: 100 }, session);
@@ -116,6 +131,27 @@ describe("malo-browser tool manifest", () => {
 
     await invokeMaloTool("click", { selector: "#go" }, session);
     expect(session.act).toHaveBeenCalledWith({ selector: "#go", type: "click" });
+
+    await invokeMaloTool("click", { text: "编辑作品", nth: 2 }, session);
+    expect(session.act).toHaveBeenCalledWith({ text: "编辑作品", nth: 2, type: "click" });
+
+    await invokeMaloTool("fill", { selector: "#title", text: "hi", verify: false }, session);
+    expect(session.act).toHaveBeenCalledWith({ selector: "#title", text: "hi", verify: false, type: "fill" });
+
+    await invokeMaloTool("drag", { from_x: 1, from_y: 2, to_x: 3, to_y: 4, steps: 5 }, session);
+    expect(session.act).toHaveBeenCalledWith({
+      from_x: 1,
+      from_y: 2,
+      to_x: 3,
+      to_y: 4,
+      steps: 5,
+      type: "drag",
+    });
+
+    await invokeMaloTool("extract", { selector: "#knob", mode: "rect", all: false }, session);
+    expect(session.extract).toHaveBeenCalledWith(
+      expect.objectContaining({ selector: "#knob", mode: "rect", all: false }),
+    );
 
     await invokeMaloTool(
       "upload_file",
@@ -162,6 +198,10 @@ describe("malo-browser tool manifest", () => {
     // 负控：clip_selector 给了但为空串，不能静默退化成整屏截图
     await expect(
       invokeMaloTool("observe", { mode: "screenshot", clip_selector: "  " }, fakeSession()),
+    ).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+    // 负控：extract 的 mode 不在枚举内要点名拒绝
+    await expect(
+      invokeMaloTool("extract", { selector: "#a", mode: "bogus" }, fakeSession()),
     ).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
     await expect(invokeMaloTool("assert", {}, fakeSession())).rejects.toMatchObject({
       code: "E_BAD_REQUEST",

@@ -62,11 +62,20 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
   },
   {
     name: "click",
-    description: "Click an element by CSS selector, or click viewport coordinates.",
+    description:
+      "Click an element by CSS selector, by visible text (substring match, innermost visible element), or click viewport coordinates.",
     input_schema: {
       type: "object",
       properties: {
-        selector: { type: "string" },
+        selector: {
+          type: "string",
+          description: "CSS selector to click; when combined with text, it scopes the text search instead.",
+        },
+        text: {
+          type: "string",
+          description: "Visible text to click (substring match, innermost visible element wins).",
+        },
+        nth: { type: "integer", minimum: 1, default: 1, description: "Which text match to click, 1-based." },
         x: { type: "number" },
         y: { type: "number" },
         button: { type: "string", enum: ["left", "middle", "right"], default: "left" },
@@ -77,15 +86,38 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
   },
   {
     name: "fill",
-    description: "Focus an input and replace its contents with text.",
+    description:
+      "Focus an input and replace its contents with text, then read the element value back: if the page swallowed the input (controlled components can), JS-focus and native-setter fallbacks run, and a still-missing value fails with E_FILL_NOT_LANDED instead of a false success.",
     input_schema: {
       type: "object",
       properties: {
         selector: { type: "string" },
         text: { type: "string" },
         clear: { type: "boolean", default: true },
+        verify: {
+          type: "boolean",
+          default: true,
+          description: "Read the value back after filling. Turn off only for pages that rewrite input.",
+        },
       },
       required: ["selector", "text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "drag",
+    description:
+      "Press the left button at from, move in interpolated steps, release at to — for sliders, crop boxes and other components that listen to pointer/mouse sequences.",
+    input_schema: {
+      type: "object",
+      properties: {
+        from_x: { type: "number" },
+        from_y: { type: "number" },
+        to_x: { type: "number" },
+        to_y: { type: "number" },
+        steps: { type: "integer", minimum: 1, maximum: 100, default: 12 },
+      },
+      required: ["from_x", "from_y", "to_x", "to_y"],
       additionalProperties: false,
     },
   },
@@ -183,12 +215,12 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
   {
     name: "extract",
     description:
-      "Extract text, HTML or selected attributes from elements matching a CSS selector.",
+      "Extract text, HTML, selected attributes, or layout rects (mode=rect: x/y is the element center, ready for click/drag coordinates) from elements matching a CSS selector.",
     input_schema: {
       type: "object",
       properties: {
         selector: { type: "string" },
-        mode: { type: "string", enum: ["text", "html", "attributes"], default: "text" },
+        mode: { type: "string", enum: ["text", "html", "attributes", "rect"], default: "text" },
         attributes: { type: "array", items: { type: "string" } },
         max_chars: { type: "integer", minimum: 0, maximum: 20000, default: 4000 },
         all: { type: "boolean", default: true },

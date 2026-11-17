@@ -195,6 +195,69 @@ assert(fill.json.result.observation.body_text.includes("风险订单"), "fill �
 const untouchedA2 = (await sessionCall(leaseA, a2, `/v1/sessions/${a2.session_id}/observe?mode=light`)).json;
 assert(untouchedA2.body_text.includes("华东渠道首批铺货"), "session a1 的输入污染了 session a2");
 
+// --- fill 落地链：受控输入被覆盖层吞点击，靠 JS 聚焦兜底层落地并回读校验 ---
+const stubbornTitle = "标题十九字验证文案一二三四五六七八九十";
+const stubbornFill = await sessionCall(leaseA, a1, `/v1/sessions/${a1.session_id}/tools/fill`, {
+  method: "POST",
+  body: { selector: '[data-demo-id="title-input"]', text: stubbornTitle },
+});
+assert(stubbornFill.status === 200, `覆盖层输入框 fill 失败：${stubbornFill.status} ${stubbornFill.text}`);
+const titleCount = (await sessionCall(leaseA, a1, `/v1/sessions/${a1.session_id}/tools/extract`, {
+  method: "POST",
+  body: { selector: '[data-demo-id="title-count"]', mode: "text", all: false },
+})).json;
+assert(
+  titleCount.result.matches[0]?.text === "19/30",
+  `标题计数没跟上受控状态：${titleCount.result.matches[0]?.text}`,
+);
+
+// --- fill 负控：不可填元素必须 E_FILL_NOT_LANDED，不报假成功 ---
+const unfillable = await sessionCall(leaseA, a1, `/v1/sessions/${a1.session_id}/tools/fill`, {
+  method: "POST",
+  body: { selector: '[data-demo-id="edit-state"]', text: "hack" },
+});
+assert(unfillable.status === 400, `不可填元素应 400：${unfillable.status} ${unfillable.text}`);
+assert(
+  unfillable.json?.error?.code === "E_FILL_NOT_LANDED" || unfillable.text.includes("E_FILL_NOT_LANDED"),
+  `缺 E_FILL_NOT_LANDED 证据：${unfillable.text}`,
+);
+
+// --- click text：裸 span（无类名无 id）按可见文本点击 ---
+const editTextClick = await sessionCall(leaseA, a1, `/v1/sessions/${a1.session_id}/tools/click`, {
+  method: "POST",
+  body: { text: "编辑作品" },
+});
+assert(editTextClick.status === 200, `text 点击失败：${editTextClick.status} ${editTextClick.text}`);
+const editState = (await sessionCall(leaseA, a1, `/v1/sessions/${a1.session_id}/tools/extract`, {
+  method: "POST",
+  body: { selector: '[data-demo-id="edit-state"]', mode: "text", all: false },
+})).json;
+assert(editState.result.matches[0]?.text === "open", `裸 span 点击没生效：${editState.result.matches[0]?.text}`);
+
+// --- extract rect + drag：坐标取自 rect，pointer 滑块被拖到 80% 档 ---
+const knobRect = (await sessionCall(leaseA, a1, `/v1/sessions/${a1.session_id}/tools/extract`, {
+  method: "POST",
+  body: { selector: '[data-demo-id="drag-knob"]', mode: "rect", all: false },
+})).json;
+const trackRect = (await sessionCall(leaseA, a1, `/v1/sessions/${a1.session_id}/tools/extract`, {
+  method: "POST",
+  body: { selector: '[data-demo-id="drag-track"]', mode: "rect", all: false },
+})).json;
+const knob = knobRect.result.matches[0]?.rect;
+const track = trackRect.result.matches[0]?.rect;
+assert(knob && track && track.width > 200, `rect 提取异常：${JSON.stringify(knobRect.result)}`);
+const drag = await sessionCall(leaseA, a1, `/v1/sessions/${a1.session_id}/tools/drag`, {
+  method: "POST",
+  body: { from_x: Math.round(knob.x), from_y: Math.round(knob.y), to_x: Math.round(track.left + track.width * 0.8), to_y: Math.round(knob.y), steps: 16 },
+});
+assert(drag.status === 200, `drag 失败：${drag.status} ${drag.text}`);
+const dragValue = (await sessionCall(leaseA, a1, `/v1/sessions/${a1.session_id}/tools/extract`, {
+  method: "POST",
+  body: { selector: '[data-demo-id="drag-value"]', mode: "text", all: false },
+})).json;
+const dragPercent = Number(dragValue.result.matches[0]?.text);
+assert(dragPercent >= 70 && dragPercent <= 90, `拖拽没驱动 pointer 滑块：value=${dragPercent}`);
+
 const focus = await sessionCall(leaseA, a1, `/v1/sessions/${a1.session_id}/tools/focus`, {
   method: "POST",
   body: { selector: '[data-demo-id="search"]' },

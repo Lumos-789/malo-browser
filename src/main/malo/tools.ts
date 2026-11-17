@@ -27,7 +27,7 @@ export type MaloToolSession = {
   snapshot(maxChars?: number, maxItems?: number): Promise<MaloSnapshot>;
   extract(input: {
     selector: string;
-    mode?: "text" | "html" | "attributes";
+    mode?: "text" | "html" | "attributes" | "rect";
     attributes?: string[];
     maxChars?: number;
     all?: boolean;
@@ -113,8 +113,8 @@ export async function invokeMaloTool(
       break;
     case "extract": {
       const mode = args.mode ?? "text";
-      if (mode !== "text" && mode !== "html" && mode !== "attributes") {
-        throw bad("mode 只能是 text / html / attributes");
+      if (mode !== "text" && mode !== "html" && mode !== "attributes" && mode !== "rect") {
+        throw bad("mode 只能是 text / html / attributes / rect");
       }
       if (args.attributes !== undefined && !Array.isArray(args.attributes)) {
         throw bad("attributes 必须是字符串数组");
@@ -236,6 +236,7 @@ export async function invokeMaloTool(
       break;
     case "click":
     case "fill":
+    case "drag":
     case "upload_file":
     case "press":
     case "hover":

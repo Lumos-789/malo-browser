@@ -167,3 +167,26 @@ describe("ElectronPageDriver evaluate error mapping", () => {
     });
   });
 });
+
+describe("ElectronPageDriver drag", () => {
+  it("runs move → press → interpolated moves with the button held → release", async () => {
+    const wc = fakeContents();
+    const driver = new ElectronPageDriver(wc as never);
+
+    await driver.drag({ x: 100, y: 50 }, { x: 200, y: 50 }, 4);
+
+    const calls = wc.debugger.sendCommand.mock.calls
+      .filter(([method]) => method === "Input.dispatchMouseEvent")
+      .map(([, params]) => params as Record<string, number | string>);
+    const types = calls.map((params) => params.type);
+    expect(types[0]).toBe("mouseMoved");
+    expect(types[1]).toBe("mousePressed");
+    expect(types.slice(2, -1)).toEqual(Array.from({ length: 4 }, () => "mouseMoved"));
+    expect(types[types.length - 1]).toBe("mouseReleased");
+
+    expect(calls[1]).toMatchObject({ x: 100, y: 50, button: "left", buttons: 1, clickCount: 1 });
+    expect(calls[2]).toMatchObject({ x: 125, y: 50, button: "left", buttons: 1 });
+    expect(calls[calls.length - 2]).toMatchObject({ x: 200, y: 50, buttons: 1 });
+    expect(calls[calls.length - 1]).toMatchObject({ x: 200, y: 50, button: "left", buttons: 0, clickCount: 1 });
+  });
+});

@@ -57,6 +57,7 @@ function statusFor(error: unknown): number {
       error.code === "E_NAV_BLOCKED" ||
       error.code === "E_UNSUPPORTED" ||
       error.code === "E_SELECTOR_NOT_FOUND" ||
+      error.code === "E_FILL_NOT_LANDED" ||
       error.code === "E_BAD_REQUEST"
     ) {
       return 400;

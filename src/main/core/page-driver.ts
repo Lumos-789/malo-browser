@@ -21,6 +21,7 @@ export interface PageDriver {
   url(): Promise<string>;
   move(point: Point): Promise<void>;
   click(point: Point, options?: ClickOptions): Promise<void>;
+  drag(from: Point, to: Point, steps: number): Promise<void>;
   insertText(text: string): Promise<void>;
   uploadFiles(selector: string, files: string[]): Promise<void>;
   press(key: string, modifiers?: number): Promise<void>;

@@ -8,6 +8,7 @@ import type {
   MaloAssertInput,
   MaloAssertResult,
   MaloExtractResult,
+  MaloFillAction,
   MaloLightObservation,
   MaloLoginInput,
   MaloLoginResult,
@@ -783,7 +784,7 @@ export class BrowserSession {
 
   async extract(input: {
     selector: string;
-    mode?: "text" | "html" | "attributes";
+    mode?: "text" | "html" | "attributes" | "rect";
     attributes?: string[];
     maxChars?: number;
     all?: boolean;
@@ -794,8 +795,8 @@ export class BrowserSession {
       throw new DemoError("E_UNSUPPORTED", "extract.selector 必须是非空字符串");
     }
     const mode = input.mode ?? "text";
-    if (mode !== "text" && mode !== "html" && mode !== "attributes") {
-      throw new DemoError("E_UNSUPPORTED", "extract.mode 只能是 text / html / attributes");
+    if (mode !== "text" && mode !== "html" && mode !== "attributes" && mode !== "rect") {
+      throw new DemoError("E_UNSUPPORTED", "extract.mode 只能是 text / html / attributes / rect");
     }
     const maxChars = Math.max(0, Math.min(2_000_000, Math.floor(input.maxChars ?? 4_000)));
     const attributes = Array.isArray(input.attributes)
@@ -836,6 +837,17 @@ export class BrowserSession {
           item.text = clip(clean(raw), maxChars);
         }
         if (mode === "html") item.html = clip(el.outerHTML || "", maxChars);
+        if (mode === "rect") {
+          const box = el.getBoundingClientRect();
+          item.rect = {
+            x: box.x + box.width / 2,
+            y: box.y + box.height / 2,
+            left: box.left,
+            top: box.top,
+            width: box.width,
+            height: box.height,
+          };
+        }
         if (mode === "attributes") {
           const picked = {};
           const names = attributes.length > 0 ? attributes : Array.from(el.attributes).map((attr) => attr.name);
@@ -1236,6 +1248,158 @@ export class BrowserSession {
     return { attempts, reason: "timeout" };
   }
 
+  /**
+   * fill 落地链（ep014 抖音标题框判例：合成输入可能被受控组件吞掉，流程回执≠值落地）：
+   * 正路 click+insertText 打完先回读；没落地换 JS 聚焦重打；再不行用原生 value
+   * setter + input/change 事件绕过输入管线注入（React/Vue 受控组件的标准通路）。
+   * 三层之后值仍不符才报 E_FILL_NOT_LANDED，带实际值证据，绝不报假成功。
+   */
+  private async fillInput(action: MaloFillAction): Promise<string> {
+    const selector = action.selector;
+    const text = action.text;
+    const point = await this.driver.rect(selector);
+    await this.driver.move({ x: point.x, y: point.y });
+    await this.driver.click({ x: point.x, y: point.y });
+    if (action.clear !== false) {
+      await this.driver.selectAll();
+      await this.driver.press("Backspace");
+    }
+    await this.driver.insertText(text);
+    if (action.verify === false) {
+      return `filled ${selector} with ${text.length} chars (unverified)`;
+    }
+    let state = await this.readEditableValue(selector, text);
+    if (state !== null && !state.matches) {
+      await this.driver.evaluate(`(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return;
+        el.focus();
+        if (typeof el.select === "function") el.select();
+      })()`);
+      await this.driver.insertText(text);
+      state = await this.readEditableValue(selector, text);
+    }
+    if (state !== null && !state.matches) {
+      await this.driver.evaluate(`(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return;
+        const text = ${JSON.stringify(text)};
+        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+          const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+          if (descriptor && descriptor.set) descriptor.set.call(el, text);
+          else el.value = text;
+        } else if (el.isContentEditable) {
+          el.textContent = text;
+        } else {
+          return;
+        }
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`);
+      state = await this.readEditableValue(selector, text);
+    }
+    if (state === null || !state.matches) {
+      const sensitive = state?.sensitive === true;
+      throw new DemoError(
+        "E_FILL_NOT_LANDED",
+        sensitive
+          ? `fill 未落地：密码框未接受输入（focused=${state?.active ?? false}），实际值不回显`
+          : `fill 未落地：期望 ${text.length} 字符，元素实际值 ${
+              state === null ? "元素已不存在" : JSON.stringify(state.value)
+            }（focused=${state?.active ?? false}）`,
+        {
+          selector,
+          url: await this.driver.url(),
+          details: sensitive ? { sensitive: true } : { expected: text, actual: state?.value ?? null },
+        },
+      );
+    }
+    return `filled ${selector} with ${text.length} chars (verified)`;
+  }
+
+  /**
+   * 回读可编辑元素：值比对在页面内完成只回 boolean——密码框绝不回传明文
+   * （matches 仍可用），非敏感字段带实际值方便报错取证。
+   */
+  private async readEditableValue(
+    selector: string,
+    expected?: string,
+  ): Promise<{ value: string | null; matches: boolean; active: boolean; sensitive: boolean } | null> {
+    return this.driver.evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const sensitive = el instanceof HTMLInputElement && el.type === "password";
+      const value = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
+        ? el.value
+        : (el.isContentEditable ? el.textContent || "" : null);
+      const expected = ${expected === undefined ? "undefined" : JSON.stringify(expected)};
+      return {
+        value: sensitive ? null : value,
+        matches: expected !== undefined && value === expected,
+        active: document.activeElement === el,
+        sensitive,
+      };
+    })()`);
+  }
+
+  /** 按可见文本定位：子串匹配、最内层可见元素优先（父容器因包含子文本也会命中，点叶子才准）。 */
+  private async locateByText(
+    text: string,
+    scopeSelector: string | undefined,
+    nth: number,
+  ): Promise<{ x: number; y: number; tag: string; snippet: string }> {
+    const found = await this.driver.evaluate<{
+      x?: number;
+      y?: number;
+      tag?: string;
+      snippet?: string;
+      missing?: "scope" | "text";
+      count?: number;
+    }>(`(() => {
+      const needle = ${JSON.stringify(text)};
+      const scope = ${scopeSelector ? `document.querySelector(${JSON.stringify(scopeSelector)})` : "document.body"};
+      if (!scope) return { missing: "scope" };
+      const matches = [];
+      const walk = (el) => {
+        for (const child of Array.from(el.children)) walk(child);
+        if (!(el.textContent || "").includes(needle)) return;
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        if (style.display === "none" || style.visibility === "hidden" || rect.width <= 0 || rect.height <= 0) return;
+        matches.push(el);
+      };
+      walk(scope);
+      const leaves = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
+      const ordered = leaves.sort((a, b) =>
+        a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1,
+      );
+      const el = ordered[${JSON.stringify(nth)} - 1];
+      if (!el) return { missing: "text", count: ordered.length };
+      const rect = el.getBoundingClientRect();
+      return {
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2,
+        tag: el.tagName.toLowerCase(),
+        snippet: (el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 40),
+      };
+    })()`);
+    if (found.missing === "scope") {
+      throw new DemoError("E_SELECTOR_NOT_FOUND", `click 文本范围选择器找不到：${scopeSelector}`, {
+        selector: scopeSelector,
+        url: await this.driver.url(),
+      });
+    }
+    if (found.missing === "text") {
+      throw new DemoError(
+        "E_SELECTOR_NOT_FOUND",
+        `找不到可点的可见文本「${text}」（候选 ${found.count ?? 0} 个）`,
+        { url: await this.driver.url() },
+      );
+    }
+    return { x: found.x as number, y: found.y as number, tag: found.tag as string, snippet: found.snippet as string };
+  }
+
   private fallbackObservation(): MaloLightObservation {
     const wc = this.stage.view.webContents;
     return {
@@ -1255,6 +1419,12 @@ export class BrowserSession {
         if (action.selector !== undefined && typeof action.selector !== "string") {
           throw new DemoError("E_UNSUPPORTED", "click.selector 必须是字符串");
         }
+        if (action.text !== undefined && (typeof action.text !== "string" || action.text.trim() === "")) {
+          throw new DemoError("E_UNSUPPORTED", "click.text 必须是非空字符串");
+        }
+        if (action.nth !== undefined && (!Number.isInteger(action.nth) || action.nth < 1)) {
+          throw new DemoError("E_UNSUPPORTED", "click.nth 必须是正整数");
+        }
         const button = action.button ?? "left";
         if (button !== "left" && button !== "middle" && button !== "right") {
           throw new DemoError("E_UNSUPPORTED", "click.button 只能是 left / middle / right");
@@ -1263,18 +1433,27 @@ export class BrowserSession {
         if (!Number.isInteger(clickCount) || clickCount < 1 || clickCount > 3) {
           throw new DemoError("E_UNSUPPORTED", "click.click_count 必须是 1-3 的整数");
         }
-        const point = action.selector
-          ? await this.driver.rect(action.selector)
-          : { x: action.x, y: action.y };
+        let point: { x?: number; y?: number };
+        let target: string | undefined;
+        if (action.text !== undefined) {
+          const found = await this.locateByText(action.text, action.selector, action.nth ?? 1);
+          point = { x: found.x, y: found.y };
+          target = `text「${action.text}」@${found.tag}`;
+        } else if (action.selector) {
+          point = await this.driver.rect(action.selector);
+          target = action.selector;
+        } else {
+          point = { x: action.x, y: action.y };
+        }
         if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-          throw new DemoError("E_UNSUPPORTED", "click 需要 selector 或 x/y 坐标");
+          throw new DemoError("E_UNSUPPORTED", "click 需要 selector、text 或 x/y 坐标");
         }
         await this.driver.move({ x: point.x as number, y: point.y as number });
         await this.driver.click(
           { x: point.x as number, y: point.y as number },
           { button, clickCount },
         );
-        return `clicked ${action.selector ?? `${point.x},${point.y}`}`;
+        return `clicked ${target ?? `${point.x},${point.y}`}`;
       }
       case "fill": {
         if (typeof action.selector !== "string" || action.selector.trim() === "") {
@@ -1283,15 +1462,34 @@ export class BrowserSession {
         if (typeof action.text !== "string") {
           throw new DemoError("E_UNSUPPORTED", "fill.text 必须是字符串");
         }
-        const point = await this.driver.rect(action.selector);
-        await this.driver.move({ x: point.x, y: point.y });
-        await this.driver.click({ x: point.x, y: point.y });
-        if (action.clear !== false) {
-          await this.driver.selectAll();
-          await this.driver.press("Backspace");
+        if (action.verify !== undefined && typeof action.verify !== "boolean") {
+          throw new DemoError("E_UNSUPPORTED", "fill.verify 必须是布尔值");
         }
-        await this.driver.insertText(action.text);
-        return `filled ${action.selector} with ${action.text.length} chars`;
+        return await this.fillInput(action);
+      }
+      case "drag": {
+        if (typeof action.from_x !== "number" || !Number.isFinite(action.from_x)) {
+          throw new DemoError("E_UNSUPPORTED", "drag.from_x 必须是有限数字");
+        }
+        if (typeof action.from_y !== "number" || !Number.isFinite(action.from_y)) {
+          throw new DemoError("E_UNSUPPORTED", "drag.from_y 必须是有限数字");
+        }
+        if (typeof action.to_x !== "number" || !Number.isFinite(action.to_x)) {
+          throw new DemoError("E_UNSUPPORTED", "drag.to_x 必须是有限数字");
+        }
+        if (typeof action.to_y !== "number" || !Number.isFinite(action.to_y)) {
+          throw new DemoError("E_UNSUPPORTED", "drag.to_y 必须是有限数字");
+        }
+        const steps = action.steps ?? 12;
+        if (!Number.isInteger(steps) || steps < 1 || steps > 100) {
+          throw new DemoError("E_UNSUPPORTED", "drag.steps 必须是 1-100 的整数");
+        }
+        await this.driver.drag(
+          { x: action.from_x, y: action.from_y },
+          { x: action.to_x, y: action.to_y },
+          steps,
+        );
+        return `dragged (${action.from_x},${action.from_y}) -> (${action.to_x},${action.to_y}) in ${steps} steps`;
       }
       case "upload_file": {
         if (typeof action.selector !== "string" || action.selector.trim() === "") {
