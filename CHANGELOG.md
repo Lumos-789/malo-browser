@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.13
+
+- **可见窗口一律带原生标题栏，行为一致。**演示舞台（scene 演示 / phase0 spike）与
+  录制窗此前是无边框窗口，与本轮定下的桌面准则冲突——「只要前台就要有框、Dock
+  能选到」。现在 `StageWindow` 默认 `frame: true`（显式传 `frame: false` 才无框，
+  全仓无人再传），phase0 舞台同样改带框；`watch` / `login` 人工接管窗、Director
+  窗原本就有框，不受影响。录制与截图产物只取页面内容，是否有框不影响画面。
+  动态 Dock（0.1.9）对演示舞台 `inactive` / `focused` 模式同样生效。
+- **回流部署端 0.1.8 的 daemon 改进（tools/common 仓先行两 commit，此前未回流）。**
+  - 租约按活动续期：lease 收到任何已鉴权请求即续期，长批任务不会跑到 TTL 被收走
+    端口；`--idle-exit-seconds=<n>`（默认 1800，0=不退出）让无租约且无请求的 daemon
+    自行退出并清理 broker.json。
+  - 版本能力握手：`/health`（broker 与 lease 两级）返回 `version` + `features`
+    （由 observe schema 推导），客户端可在启动前判断能力（如
+    `observe.screenshot_clip`）。lease `/health` 保持不鉴权且不泄露
+    `lease_id` / `agent_id`（沿用 0.1.12 审查定谳的信息最小化口径）。
+  - `--proxy-server=<url>`：app ready 前挂 Chromium 浏览器级代理开关，daemon 各
+    session / partition 生效。
+  - `extract` 的 `max_chars` 上限 20 000 → 2 000 000（部署端并行会话先行改动，
+    随本轮回流；`observe` 的 20 000 上限不变）。
+
 ## 0.1.12
 
 - **登录态导入的坏帧不再能炸掉 daemon。**`POST /v1/profiles/:name/import` 连接源 CDP

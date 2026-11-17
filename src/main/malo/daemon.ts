@@ -5,7 +5,9 @@ import { DemoError, isDemoError } from "../../shared/errors";
 import type { MaloLease } from "../../shared/malo";
 import { startBrokerServer, type BrokerServer } from "./broker-server";
 import { startLeaseServer, type LeaseServer } from "./lease-server";
+import { MALO_FEATURES } from "../../shared/malo-tools";
 import { LeaseManager, type LeaseRecord } from "./lease-manager";
+import { maloVersion } from "./version";
 import { LOOPBACK } from "./http";
 import { PortPool } from "./port-pool";
 import { ProfileStore } from "./profile-store";
@@ -21,6 +23,16 @@ export type MaloDaemonOptions = {
   dataDir: string;
   brokerToken?: string;
   reaperIntervalMs?: number;
+  /** 无租约且无请求超过这么久就退出进程；0/不传＝不退出。 */
+  idleExitMs?: number;
+  /** 空闲退出时回调（由宿主负责真正退出 Electron）。 */
+  onIdleExit?: () => void;
+};
+
+export type MaloHandshake = {
+  version: string;
+  features: string[];
+  leaseTtlSeconds: number;
 };
 
 type LeaseRuntime = {
@@ -34,13 +46,16 @@ export type MaloDaemon = {
   close(): Promise<void>;
 };
 
-function publicLease(lease: LeaseRecord): MaloLease {
+function publicLease(lease: LeaseRecord, handshake: MaloHandshake): MaloLease {
   return {
     lease_id: lease.id,
     agent_id: lease.agentId,
     endpoint: `http://${LOOPBACK}:${lease.port}`,
     token: lease.token,
     expires_at: new Date(lease.expiresAtMs).toISOString(),
+    version: handshake.version,
+    features: handshake.features,
+    ttl_seconds: handshake.leaseTtlSeconds,
   };
 }
 
@@ -50,7 +65,13 @@ function isPortInUse(error: unknown): boolean {
   return message.includes("端口被占用") || cause?.code === "EADDRINUSE";
 }
 
-type BrokerFile = { endpoint: string; token: string; pid: number };
+type BrokerFile = {
+  endpoint: string;
+  token: string;
+  pid: number;
+  version: string;
+  features: string[];
+};
 
 async function readExistingBroker(file: string): Promise<BrokerFile | null> {
   let raw: string;
@@ -134,9 +155,19 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
     }
     console.error(`[malo] 覆盖陈旧 broker 文件：${brokerFile}`);
   }
+  const handshake: MaloHandshake = {
+    version: maloVersion(),
+    features: MALO_FEATURES,
+    leaseTtlSeconds: Math.round(options.leaseTtlMs / 1000),
+  };
   const brokerToken = options.brokerToken ?? crypto.randomBytes(32).toString("hex");
   const pool = new PortPool(options.portMin, options.portMax);
   const leases = new LeaseManager(options.leaseTtlMs);
+  // 有活动就不该过期：createLease / heartbeat / 任何 lease 请求都刷新
+  let lastActivityMs = Date.now();
+  const touch = () => {
+    lastActivityMs = Date.now();
+  };
   const runtimes = new Map<string, LeaseRuntime>();
 
   const teardownLease = async (lease: LeaseRecord, reason: string): Promise<void> => {
@@ -157,11 +188,15 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
   broker = await startBrokerServer({
     port: options.brokerPort,
     token: brokerToken,
+    version: handshake.version,
+    features: handshake.features,
+    leaseTtlSeconds: handshake.leaseTtlSeconds,
     createLease: async (agentId) => {
+      touch();
       const normalized = agentId.trim();
       const existing = leases.list().find((lease) => lease.agentId === normalized);
       if (existing) {
-        if (existing.expiresAtMs > Date.now()) return publicLease(existing);
+        if (existing.expiresAtMs > Date.now()) return publicLease(existing, handshake);
         try {
           await releaseLease(existing.id, "expired-before-reuse");
         } catch (error) {
@@ -193,9 +228,19 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
             agentId: lease.agentId,
             manager,
             sessionIdleMs: options.sessionIdleMs,
+            version: handshake.version,
+            features: handshake.features,
+            onActivity: () => {
+              touch();
+              try {
+                leases.heartbeat(lease.id);
+              } catch {
+                // 租约已被回收：下一次请求自然会 404，这里不打断当前请求
+              }
+            },
           });
           runtimes.set(lease.id, { manager, server });
-          return publicLease(lease);
+          return publicLease(lease, handshake);
         } catch (error) {
           leases.remove(lease.id);
           if (isPortInUse(error)) {
@@ -212,6 +257,7 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
       );
     },
     heartbeat: (id) => {
+      touch();
       try {
         const lease = leases.heartbeat(id);
         console.error(`[malo] lease ${id} heartbeat`);
@@ -221,7 +267,7 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
       }
     },
     release: (id) => releaseLease(id, "client-release"),
-    list: () => leases.list().map(publicLease),
+    list: () => leases.list().map((lease) => publicLease(lease, handshake)),
     state: () => ({
       service: "malo-daemon",
       leases: leases.list().map((lease) => ({
@@ -250,24 +296,56 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
 
   await writeFile(
     brokerFile,
-    `${JSON.stringify({ endpoint: broker.url, token: brokerToken, pid: process.pid }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        endpoint: broker.url,
+        token: brokerToken,
+        pid: process.pid,
+        version: handshake.version,
+        features: handshake.features,
+      },
+      null,
+      2,
+    )}\n`,
     { mode: 0o600 },
   );
   await chmod(brokerFile, 0o600);
 
   let closed = false;
+  const shutdown = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    clearInterval(reaper);
+    if (idleTimer) clearInterval(idleTimer);
+    await Promise.allSettled(
+      [...runtimes.keys()].map((id) => releaseLease(id, "daemon-close")),
+    );
+    await broker.close();
+    await rm(brokerFile, { force: true });
+  };
+
+  // 无租约且长时间没请求就退出：省内存，也让「装了新版本」能自然生效
+  const idleExitMs = options.idleExitMs ?? 0;
+  const idleTimer =
+    idleExitMs > 0
+      ? setInterval(() => {
+          void (async () => {
+            if (closed) return;
+            if (leases.list().length > 0) return;
+            if (Date.now() - lastActivityMs < idleExitMs) return;
+            console.error(
+              `[malo] 无租约且 ${Math.round(idleExitMs / 1000)}s 无请求，daemon 退出：${broker.url}`,
+            );
+            await shutdown();
+            options.onIdleExit?.();
+          })();
+        }, Math.max(1_000, Math.min(30_000, Math.floor(idleExitMs / 4))))
+      : null;
+  idleTimer?.unref();
+
   return {
     endpoint: broker.url,
     brokerFile,
-    async close(): Promise<void> {
-      if (closed) return;
-      closed = true;
-      clearInterval(reaper);
-      await Promise.allSettled(
-        [...runtimes.keys()].map((id) => releaseLease(id, "daemon-close")),
-      );
-      await broker.close();
-      await rm(brokerFile, { force: true });
-    },
+    close: shutdown,
   };
 }

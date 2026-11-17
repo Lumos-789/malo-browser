@@ -4,6 +4,10 @@ export type MaloLease = {
   endpoint: string;
   token: string;
   expires_at: string;
+  /** 握手信息：客户端据此判断能力，不用等调用失败。 */
+  version: string;
+  features: string[];
+  ttl_seconds: number;
 };
 
 export type MaloSessionSummary = {

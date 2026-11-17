@@ -29,7 +29,9 @@ npm run daemon
 {
   "endpoint": "http://127.0.0.1:7410",
   "token": "<broker-token>",
-  "pid": 1234
+  "pid": 1234,
+  "version": "0.1.8",
+  "features": ["observe.screenshot_clip"]
 }
 ```
 
@@ -43,11 +45,51 @@ electron . --mode=daemon \
   --lease-ttl-seconds=300 \
   --session-idle-seconds=300 \
   --max-sessions=4 \
+  --idle-exit-seconds=1800 \
   --data-dir=~/.malo-browser
 ```
 
 同一个数据目录只允许一个 daemon。已有实例仍健康时，新进程会明确报错，不会抢占端口。
 已停止实例留下的 `broker.json` 会被识别为陈旧文件并覆盖。
+
+### 握手：先问版本和能力，别等调用失败
+
+`/health`（broker 与每个 lease 都有）、`broker.json`、以及 `POST /v1/leases` 的响应都带：
+
+- `version`：包版本，例如 `0.1.8`
+- `features`：能力清单，随工具 schema 自动推导（目前是 `observe.screenshot_clip`）
+- `ttl_seconds`（仅租约响应）：本 daemon 的租约 TTL
+
+客户端应当在**拿到租约后、正式干活之前**比对 `features`，缺能力就立刻失败并提示升级，
+不要跑到第 N 条任务才发现。注意 `broker.json` 里的是「谁先起来谁写」，等于当前活着的那个 daemon 的版本。
+
+> 单实例意味着**升级不会自动生效**：装了新版本，老 daemon 还在跑老代码。
+> 靠下面的空闲退出或手动重启才会换。
+
+### 租约按活动续期
+
+TTL 到期就回收（默认 300s）。**任何通过鉴权的 lease 请求都会刷新这个租约的 TTL**——
+有活动就不该过期。所以长批任务不会跑到第 5 分钟端口就被收走；
+`POST /v1/leases/:id/heartbeat` 仍然保留，给「长时间不发请求但要占住端口」的客户端显式续期。
+`/health` 不算活动（不需要鉴权，不能借它续命）。
+
+### 空闲退出
+
+`--idle-exit-seconds=<n>`（默认 1800，0＝不退出）：**没有任何租约**且连续 n 秒没有请求，
+daemon 关闭自己并删掉 `broker.json`。好处是省内存，且下次启动会拉起新装的版本。
+依赖长连接的客户端要自己持有租约，否则会被回收。
+
+### 每个消费方用独立 data-dir
+
+一个 data-dir 一个 daemon。开发调试、多版本共存、或「不想被别人正在跑的 daemon 绑架」时，
+用独立数据目录和端口池，把两个 daemon 彻底隔开：
+
+```bash
+electron . --mode=daemon --data-dir=/tmp/malo-dev \
+  --daemon-port=7530 --port-min=7800 --port-max=7899
+```
+
+`broker.json` 落在 data-dir 里，所以客户端按各自的 broker 文件找各自的 daemon，互不干扰。
 
 ## 端口租约
 
@@ -466,9 +508,10 @@ daemon 在 macOS 使用 `accessory` 激活策略并隐藏 Dock，不创建可见
 触发；窗口全部收起后图标自动隐藏，纯后台期间仍然无图标。
 
 需要给人看的时候才进入 `watch` / `login`，其余时间只有隐藏窗口和按需截图。
-人工接管窗口带原生标题栏，可以拖动和缩放，顶部还有一条浏览器工具条：后退、前进、
-刷新和地址栏（只接受 `http` / `https`，回车跳转，地址随页面同步）；录制与演示舞台
-仍然是无边框窗口，也没有这条工具条。
+所有会出现在屏幕上的窗口一律带原生标题栏（可拖动、可缩放），行为一致：人工接管
+窗口顶部还有一条浏览器工具条——后退、前进、刷新和地址栏（只接受 `http` / `https`，
+回车跳转，地址随页面同步）；演示舞台自 0.1.13 起同样带框，不再有裸无边框窗口。
+录制（`hidden` 模式）与截图产物只取页面内容，窗口是否有框不影响画面。
 
 ## 验证
 

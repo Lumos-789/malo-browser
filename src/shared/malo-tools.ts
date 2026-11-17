@@ -390,3 +390,16 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
 ];
 
 export const MALO_TOOL_NAMES = new Set(MALO_TOOLS.map((tool) => tool.name));
+
+/** observe 是否支持按元素截图（clip_selector）。 */
+function observeSupportsClip(): boolean {
+  const observe = MALO_TOOLS.find((tool) => tool.name === "observe");
+  return observe !== undefined && "clip_selector" in observe.input_schema.properties;
+}
+
+/**
+ * 能力清单：随工具 schema 自动推导，别手写维护。
+ * 客户端（如 yewu-shot）拿它做启动前校验，缺能力就早失败，
+ * 而不是跑到第 N 行才发现。
+ */
+export const MALO_FEATURES: string[] = observeSupportsClip() ? ["observe.screenshot_clip"] : [];

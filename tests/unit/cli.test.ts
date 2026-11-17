@@ -127,6 +127,7 @@ describe("cli daemon flags", () => {
     expect(options.leaseTtlSeconds).toBe(300);
     expect(options.sessionIdleSeconds).toBe(300);
     expect(options.maxSessionsPerLease).toBe(4);
+    expect(options.idleExitSeconds).toBe(1800);
     expect(options.dataDir.endsWith(".malo-browser")).toBe(true);
   });
 
@@ -155,6 +156,14 @@ describe("cli daemon flags", () => {
     expect(() => parseOptions(["--mode=daemon", "--port-max=70000"])).toThrow(/65535/);
     expect(() => parseOptions(["--mode=daemon", "--port-min=7500", "--port-max=7400"])).toThrow(/范围无效/);
     expect(() => parseOptions(["--mode=daemon", "--daemon-port=7415"])).toThrow(/不能落在/);
+  });
+
+  it("lets idle exit be disabled with zero but rejects nonsense", () => {
+    expect(parseOptions(["--mode=daemon", "--idle-exit-seconds=0"]).idleExitSeconds).toBe(0);
+    expect(parseOptions(["--mode=daemon", "--idle-exit-seconds=60"]).idleExitSeconds).toBe(60);
+    expect(() => parseOptions(["--mode=daemon", "--idle-exit-seconds=-1"])).toThrow(/0-86400/);
+    expect(() => parseOptions(["--mode=daemon", "--idle-exit-seconds=1.5"])).toThrow(/0-86400/);
+    expect(() => parseOptions(["--mode=daemon", "--idle-exit-seconds=90000"])).toThrow(/0-86400/);
   });
 
   it("rejects zero or fractional limits", () => {

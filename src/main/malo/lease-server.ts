@@ -28,6 +28,14 @@ export type LeaseServerOptions = {
   agentId: string;
   manager: SessionManager;
   sessionIdleMs: number;
+  /** 握手信息，写进 /health。 */
+  version: string;
+  features: string[];
+  /**
+   * 收到任何已鉴权请求时调用，用于给租约续期。
+   * 语义：有活动就不该过期——否则长批任务跑到 TTL 就到点，端口被收走。
+   */
+  onActivity?: () => void;
 };
 
 export type LeaseServer = {
@@ -101,7 +109,13 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
     const url = new URL(req.url ?? "/", `http://${LOOPBACK}:${port}`);
     const route = `${req.method ?? "GET"} ${url.pathname}`;
     if (route === "GET /health") {
-      sendJson(res, 200, { status: "ok", service: "malo-lease" });
+      // /health 不鉴权：只带握手用的 version/features，不泄露 lease_id/agent_id
+      sendJson(res, 200, {
+        status: "ok",
+        service: "malo-lease",
+        version: options.version,
+        features: options.features,
+      });
       return;
     }
     const provided = extractBearer(req, "x-malo-lease-token");
@@ -109,6 +123,8 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
       sendError(res, 401, "E_CONTROL_UNAUTHORIZED", "缺少或错误的 lease token");
       return;
     }
+    // 鉴权通过即算活动：租约按使用续期，长任务不会中途被回收
+    options.onActivity?.();
     if (route === "GET /v1/state") {
       sendJson(res, 200, {
         lease_id: options.leaseId,

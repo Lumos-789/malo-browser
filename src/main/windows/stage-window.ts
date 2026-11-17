@@ -29,7 +29,7 @@ export class StageWindow {
       height: options.height + this.toolbarHeight,
       useContentSize: true,
       show: false,
-      frame: options.frame === true,
+      frame: options.frame !== false,
       backgroundColor: "#ffffff",
       title: options.title ?? "Demo Stage",
     });

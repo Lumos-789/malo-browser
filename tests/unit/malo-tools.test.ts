@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DemoError } from "../../src/shared/errors";
-import { MALO_TOOLS, MALO_TOOL_NAMES } from "../../src/shared/malo-tools";
+import { MALO_FEATURES, MALO_TOOLS, MALO_TOOL_NAMES } from "../../src/shared/malo-tools";
 import type { MaloRunReport } from "../../src/shared/malo";
 import {
   assertFailureResult,
@@ -413,5 +413,15 @@ describe("assert verdicts", () => {
     expect(report.failed_step).toBe(0);
     expect(report.steps[0].error?.code).toBe("E_ASSERTION_FAILED");
     expect(report.steps[0].error?.details?.checks as unknown[]).toHaveLength(2);
+  });
+});
+
+describe("feature handshake", () => {
+  it("derives the capability list from the observe schema", () => {
+    const observe = MALO_TOOLS.find((tool) => tool.name === "observe");
+    expect(observe).toBeDefined();
+    const supportsClip = "clip_selector" in observe!.input_schema.properties;
+    // 能力清单必须和 schema 一致：这是客户端启动前判断能否只截元素的外交口径
+    expect(MALO_FEATURES.includes("observe.screenshot_clip")).toBe(supportsClip);
   });
 });

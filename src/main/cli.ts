@@ -29,7 +29,9 @@ export type Options = {
   leaseTtlSeconds: number;
   sessionIdleSeconds: number;
   maxSessionsPerLease: number;
+  idleExitSeconds: number;
   dataDir: string;
+  proxyServer: string | null;
 };
 
 const MODES: Mode[] = ["stage", "record", "smoke", "app", "daemon"];
@@ -61,7 +63,9 @@ export const KNOWN_FLAGS: readonly string[] = [
   "lease-ttl-seconds",
   "session-idle-seconds",
   "max-sessions",
+  "idle-exit-seconds",
   "data-dir",
+  "proxy-server",
   "help",
   "version",
 ];
@@ -103,7 +107,9 @@ export const USAGE = `Malo Browser — 演示用浏览器
   --lease-ttl-seconds=<n>    lease 过期秒数，默认 300
   --session-idle-seconds=<n> 空闲 session 回收秒数，默认 300
   --max-sessions=<n>         每个 lease 最大 session 数，默认 4
+  --idle-exit-seconds=<n>    无租约且无请求这么久就退出，默认 1800；0=不退出
   --data-dir=<dir>           malo-browser 数据目录，默认 ~/.malo-browser
+  --proxy-server=<url>       Chromium 代理（如 http://127.0.0.1:7890），浏览器级，所有 session 生效
 
 示例：
   electron . --mode=record --seconds=10 --out=evidence --label=hidden
@@ -153,6 +159,23 @@ function readPort(argv: string[], name: string, fallback: number): number {
   const value = readNumber(argv, name, fallback);
   if (!Number.isInteger(value) || value > 65535) {
     throw new Error(`参数 --${name} 必须是 1-65535 的整数端口，收到 ${value}`);
+  }
+  return value;
+}
+
+// idle-exit 需要用 0 表示「不退出」，所以单独一个允许 0 的读取器
+function readNonNegativeInteger(
+  argv: string[],
+  name: string,
+  fallback: number,
+  max: number,
+): number {
+  // 不走 readNumber：它把 0 当非法，而这里 0 是「关闭」的合法取值
+  const raw = readFlag(argv, name);
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0 || value > max) {
+    throw new Error(`参数 --${name} 必须是 0-${max} 的整数，收到 ${raw}`);
   }
   return value;
 }
@@ -240,6 +263,8 @@ export function parseOptions(argv: string[]): Options {
     leaseTtlSeconds: readPositiveInteger(argv, "lease-ttl-seconds", 300, 86_400),
     sessionIdleSeconds: readPositiveInteger(argv, "session-idle-seconds", 300, 86_400),
     maxSessionsPerLease,
+    idleExitSeconds: readNonNegativeInteger(argv, "idle-exit-seconds", 1800, 86_400),
     dataDir: path.resolve(expandHome(readFlag(argv, "data-dir") ?? path.join(os.homedir(), ".malo-browser"))),
+    proxyServer: readFlag(argv, "proxy-server") ?? null,
   };
 }

@@ -11,6 +11,9 @@ const BROKER_TOKEN = "broker-token-0123456789abcdef";
 const LEASE_TOKEN = "lease-token-0123456789abcdef";
 const SESSION_A = "session-a-token-0123456789";
 const SESSION_B = "session-b-token-0123456789";
+const VERSION = "0.1.7-test";
+const FEATURES = ["observe.screenshot_clip"];
+const TTL_SECONDS = 60;
 
 type RawResponse = { status: number; headers: http.IncomingHttpHeaders; body: string };
 
@@ -84,6 +87,9 @@ async function startBrokerHarness(): Promise<{
   const server = await startBrokerServer({
     port: 0,
     token: BROKER_TOKEN,
+    version: VERSION,
+    features: FEATURES,
+    leaseTtlSeconds: TTL_SECONDS,
     createLease: async (agentId) => {
       const record = manager.create(agentId, 7411);
       lease = {
@@ -92,6 +98,9 @@ async function startBrokerHarness(): Promise<{
         endpoint: `http://127.0.0.1:${record.port}`,
         token: record.token,
         expires_at: new Date(record.expiresAtMs).toISOString(),
+        version: VERSION,
+        features: FEATURES,
+        ttl_seconds: TTL_SECONDS,
       };
       return lease;
     },
@@ -112,6 +121,9 @@ async function startBrokerHarness(): Promise<{
         endpoint: `http://127.0.0.1:${record.port}`,
         token: record.token,
         expires_at: new Date(record.expiresAtMs).toISOString(),
+        version: VERSION,
+        features: FEATURES,
+        ttl_seconds: TTL_SECONDS,
       })),
     state: () => ({ service: "malo-daemon", leases: manager.list().length }),
   });
@@ -131,7 +143,12 @@ describe("broker server", () => {
     const { server } = await startBrokerHarness();
     const health = await request(server.port, { path: "/health" });
     expect(health.status).toBe(200);
-    expect(JSON.parse(health.body)).toEqual({ status: "ok", service: "malo-broker" });
+    expect(JSON.parse(health.body)).toEqual({
+      status: "ok",
+      service: "malo-broker",
+      version: VERSION,
+      features: FEATURES,
+    });
 
     const foreign = await request(server.port, {
       path: "/health",
@@ -139,6 +156,21 @@ describe("broker server", () => {
     });
     expect(foreign.status).toBe(403);
     expect(JSON.parse(foreign.body).error.code).toBe("E_CONTROL_FORBIDDEN");
+  });
+
+  it("carries version, features and ttl on the lease for client handshake", async () => {
+    const harness = await startBrokerHarness();
+    const created = await request(harness.server.port, {
+      method: "POST",
+      path: "/v1/leases",
+      headers: brokerHeaders(),
+      body: JSON.stringify({ agent_id: "agent-a" }),
+    });
+    expect(created.status).toBe(201);
+    const lease = JSON.parse(created.body) as Record<string, unknown>;
+    expect(lease.version).toBe(VERSION);
+    expect(lease.features).toEqual(FEATURES);
+    expect(lease.ttl_seconds).toBe(TTL_SECONDS);
   });
 
   it("requires the broker token for control routes", async () => {
@@ -319,7 +351,7 @@ function fakeSession(id: string, token: string): FakeSession {
   };
 }
 
-async function startLeaseHarness(): Promise<{
+async function startLeaseHarness(onActivity?: () => void): Promise<{
   server: LeaseServer;
   sessions: Map<string, FakeSession>;
   manager: SessionManager;
@@ -381,6 +413,9 @@ async function startLeaseHarness(): Promise<{
     agentId: "agent-a",
     manager,
     sessionIdleMs: 60_000,
+    version: VERSION,
+    features: FEATURES,
+    onActivity,
   });
   servers.push(server);
   return { server, sessions, manager };
@@ -422,6 +457,31 @@ describe("lease server", () => {
     });
     expect(scoped.status).toBe(200);
     expect(JSON.parse(scoped.body).session_id).toBe("session-a");
+  });
+
+  it("advertises the handshake and renews the lease only on authenticated activity", async () => {
+    const onActivity = vi.fn();
+    const { server } = await startLeaseHarness(onActivity);
+    const health = await request(server.port, { path: "/health" });
+    expect(JSON.parse(health.body)).toMatchObject({
+      service: "malo-lease",
+      version: VERSION,
+      features: FEATURES,
+    });
+    // /health 不算活动：没有鉴权就不该续期
+    expect(onActivity).not.toHaveBeenCalled();
+
+    const state = await request(server.port, { path: "/v1/state", headers: leaseHeaders() });
+    expect(state.status).toBe(200);
+    expect(onActivity).toHaveBeenCalledTimes(1);
+
+    // 鉴权失败的请求不能借机续命
+    const denied = await request(server.port, {
+      path: "/v1/state",
+      headers: { "x-malo-lease-token": "wrong-token" },
+    });
+    expect(denied.status).toBe(401);
+    expect(onActivity).toHaveBeenCalledTimes(1);
   });
 
   it("navigates, observes, acts and streams events on the scoped session", async () => {

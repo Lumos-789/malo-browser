@@ -53,6 +53,11 @@ try {
   throw error;
 }
 
+if (opts.proxyServer) {
+  // Must be appended before app ready; browser-process-wide, so every session/partition routes through it.
+  app.commandLine.appendSwitch("proxy-server", opts.proxyServer);
+}
+
 if (opts.mode === "daemon") {
   // Keep Chromium profile storage inside the malo data dir so one directory owns all state.
   app.setPath("userData", path.join(opts.dataDir, "chromium"));
@@ -93,7 +98,9 @@ app.whenReady().then(async () => {
         leaseTtlMs: opts.leaseTtlSeconds * 1000,
         sessionIdleMs: opts.sessionIdleSeconds * 1000,
         maxSessionsPerLease: opts.maxSessionsPerLease,
+        idleExitMs: opts.idleExitSeconds * 1000,
         dataDir: opts.dataDir,
+        onIdleExit: () => app.exit(0),
       });
       console.log(
         JSON.stringify({

@@ -20,7 +20,7 @@ export function createStage(options: {
     height: options.height,
     useContentSize: true,
     show: false,
-    frame: false,
+    frame: true,
     backgroundColor: "#ffffff",
     title: "Malo Browser Stage",
   });

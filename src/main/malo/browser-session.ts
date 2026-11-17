@@ -756,7 +756,7 @@ export class BrowserSession {
     if (mode !== "text" && mode !== "html" && mode !== "attributes") {
       throw new DemoError("E_UNSUPPORTED", "extract.mode 只能是 text / html / attributes");
     }
-    const maxChars = Math.max(0, Math.min(20_000, Math.floor(input.maxChars ?? 4_000)));
+    const maxChars = Math.max(0, Math.min(2_000_000, Math.floor(input.maxChars ?? 4_000)));
     const attributes = Array.isArray(input.attributes)
       ? input.attributes.filter((item): item is string => typeof item === "string").slice(0, 40)
       : [];

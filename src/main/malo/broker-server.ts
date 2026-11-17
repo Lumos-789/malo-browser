@@ -22,6 +22,10 @@ import type { LeaseRecord } from "./lease-manager";
 export type BrokerServerOptions = {
   port: number;
   token: string;
+  /** 握手信息：写进 /health 与租约响应，客户端据此判断能力。 */
+  version: string;
+  features: string[];
+  leaseTtlSeconds: number;
   createLease(agentId: string): Promise<MaloLease>;
   heartbeat(id: string): LeaseRecord;
   release(id: string): Promise<void>;
@@ -35,13 +39,16 @@ export type BrokerServer = {
   close(): Promise<void>;
 };
 
-function publicLease(lease: LeaseRecord): MaloLease {
+function publicLease(lease: LeaseRecord, handshake: BrokerServerOptions): MaloLease {
   return {
     lease_id: lease.id,
     agent_id: lease.agentId,
     endpoint: `http://${LOOPBACK}:${lease.port}`,
     token: lease.token,
     expires_at: new Date(lease.expiresAtMs).toISOString(),
+    version: handshake.version,
+    features: handshake.features,
+    ttl_seconds: handshake.leaseTtlSeconds,
   };
 }
 
@@ -91,7 +98,12 @@ export async function startBrokerServer(options: BrokerServerOptions): Promise<B
     const url = new URL(req.url ?? "/", `http://${LOOPBACK}:${port}`);
     const route = `${req.method ?? "GET"} ${url.pathname}`;
     if (route === "GET /health") {
-      sendJson(res, 200, { status: "ok", service: "malo-broker" });
+      sendJson(res, 200, {
+        status: "ok",
+        service: "malo-broker",
+        version: options.version,
+        features: options.features,
+      });
       return;
     }
     const provided = extractBearer(req, "x-malo-broker-token");
@@ -116,7 +128,7 @@ export async function startBrokerServer(options: BrokerServerOptions): Promise<B
     }
     const match = /^\/v1\/leases\/([^/]+)\/heartbeat$/.exec(url.pathname);
     if (req.method === "POST" && match) {
-      sendJson(res, 200, publicLease(options.heartbeat(decodeURIComponent(match[1]))));
+      sendJson(res, 200, publicLease(options.heartbeat(decodeURIComponent(match[1])), options));
       return;
     }
     const deleteMatch = /^\/v1\/leases\/([^/]+)$/.exec(url.pathname);

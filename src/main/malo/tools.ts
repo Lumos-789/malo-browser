@@ -127,7 +127,7 @@ export async function invokeMaloTool(
         attributes: Array.isArray(args.attributes)
           ? (args.attributes as string[])
           : undefined,
-        maxChars: readInteger(args, "max_chars", 4_000, 0, 20_000),
+        maxChars: readInteger(args, "max_chars", 4_000, 0, 2_000_000),
         all: args.all !== false,
       });
       break;
