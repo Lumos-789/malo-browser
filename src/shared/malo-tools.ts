@@ -222,7 +222,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
         selector: { type: "string" },
         mode: { type: "string", enum: ["text", "html", "attributes", "rect"], default: "text" },
         attributes: { type: "array", items: { type: "string" } },
-        max_chars: { type: "integer", minimum: 0, maximum: 20000, default: 4000 },
+        max_chars: { type: "integer", minimum: 0, maximum: 2000000, default: 4000 },
         all: { type: "boolean", default: true },
       },
       required: ["selector"],

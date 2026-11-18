@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { DemoError } from "../../src/shared/errors";
 import { MALO_FEATURES, MALO_TOOLS, MALO_TOOL_NAMES } from "../../src/shared/malo-tools";
@@ -97,6 +98,51 @@ describe("malo-browser tool manifest", () => {
     expect(tool).toBeDefined();
     const mode = tool!.input_schema.properties.mode as { enum?: string[] };
     expect(mode.enum).toContain("rect");
+  });
+
+  it("keeps the extract max_chars manifest bound equal to the dispatch bound", async () => {
+    const extract = MALO_TOOLS.find((item) => item.name === "extract");
+    const maxChars = extract!.input_schema.properties.max_chars as {
+      minimum: number;
+      maximum: number;
+      default: number;
+    };
+    const session = fakeSession();
+
+    await invokeMaloTool("extract", { selector: "#x" }, session);
+    expect(session.extract).toHaveBeenCalledWith(
+      expect.objectContaining({ maxChars: maxChars.default }),
+    );
+
+    await invokeMaloTool("extract", { selector: "#x", max_chars: maxChars.maximum }, session);
+    expect(session.extract).toHaveBeenLastCalledWith(
+      expect.objectContaining({ maxChars: maxChars.maximum }),
+    );
+
+    await expect(
+      invokeMaloTool("extract", { selector: "#x", max_chars: maxChars.maximum + 1 }, session),
+    ).rejects.toMatchObject({
+      code: "E_BAD_REQUEST",
+      message: expect.stringContaining(
+        `max_chars 必须是 ${maxChars.minimum}-${maxChars.maximum} 的整数`,
+      ),
+    });
+  });
+
+  it("keeps the session tool count in plugin descriptions equal to MALO_TOOLS.length", () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("../../.zcode-plugin/plugin.json", import.meta.url), "utf8"),
+    ) as { description: string; description_i18n: Record<string, string> };
+    const texts: [string, string][] = [
+      ["description", manifest.description],
+      ["description_i18n.en", manifest.description_i18n.en],
+      ["description_i18n.zh-CN", manifest.description_i18n["zh-CN"]],
+    ];
+    for (const [label, text] of texts) {
+      const match = /(\d+)\s*(?:个\s*)?session\s*(?:tools|工具)/.exec(text);
+      expect(match, `${label} 缺少 session 工具数声明`).not.toBeNull();
+      expect(Number(match![1]), label).toBe(MALO_TOOLS.length);
+    }
   });
 
   it("routes tool calls to page operations", async () => {

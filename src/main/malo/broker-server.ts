@@ -39,7 +39,10 @@ export type BrokerServer = {
   close(): Promise<void>;
 };
 
-function publicLease(lease: LeaseRecord, handshake: BrokerServerOptions): MaloLease {
+export function publicLease(
+  lease: LeaseRecord,
+  handshake: Pick<BrokerServerOptions, "version" | "features" | "leaseTtlSeconds">,
+): MaloLease {
   return {
     lease_id: lease.id,
     agent_id: lease.agentId,

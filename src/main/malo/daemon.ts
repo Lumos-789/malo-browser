@@ -2,13 +2,11 @@ import crypto from "node:crypto";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DemoError, isDemoError } from "../../shared/errors";
-import type { MaloLease } from "../../shared/malo";
-import { startBrokerServer, type BrokerServer } from "./broker-server";
+import { publicLease, startBrokerServer, type BrokerServer } from "./broker-server";
 import { startLeaseServer, type LeaseServer } from "./lease-server";
 import { MALO_FEATURES } from "../../shared/malo-tools";
 import { LeaseManager, type LeaseRecord } from "./lease-manager";
 import { maloVersion } from "./version";
-import { LOOPBACK } from "./http";
 import { PortPool } from "./port-pool";
 import { ProfileStore } from "./profile-store";
 import { SessionManager } from "./session-manager";
@@ -45,19 +43,6 @@ export type MaloDaemon = {
   brokerFile: string;
   close(): Promise<void>;
 };
-
-function publicLease(lease: LeaseRecord, handshake: MaloHandshake): MaloLease {
-  return {
-    lease_id: lease.id,
-    agent_id: lease.agentId,
-    endpoint: `http://${LOOPBACK}:${lease.port}`,
-    token: lease.token,
-    expires_at: new Date(lease.expiresAtMs).toISOString(),
-    version: handshake.version,
-    features: handshake.features,
-    ttl_seconds: handshake.leaseTtlSeconds,
-  };
-}
 
 function isPortInUse(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
