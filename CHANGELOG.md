@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.17
+
+- **`.codex-plugin/plugin.json` 描述对齐 `.zcode-plugin`。**Codex 清单的 description
+  停在 agent runtime 加入前的措辞（没提 profile 持久登录态、26 个 session 工具与
+  网络抓包），`interface.shortDescription` / `longDescription` 同步补上 daemon 的
+  隔离会话与工具数。
+- **防漂移测试：**`.codex-plugin` 的 description 必须与 `.zcode-plugin` 逐字相同，
+  且其中的 session 工具数 === MALO_TOOLS 长度。运行时无改动。
+
 ## 0.1.16
 
 - **extract `max_chars` 上限三处对齐：0-2000000。**0.1.13 回流时 dispatch（tools.ts

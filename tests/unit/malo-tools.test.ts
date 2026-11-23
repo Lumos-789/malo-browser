@@ -145,6 +145,18 @@ describe("malo-browser tool manifest", () => {
     }
   });
 
+  it("keeps the .codex-plugin description in step with .zcode-plugin", () => {
+    const read = (rel: string) =>
+      JSON.parse(readFileSync(new URL(`../../${rel}`, import.meta.url), "utf8")) as {
+        description: string;
+      };
+    const codex = read(".codex-plugin/plugin.json");
+    expect(codex.description).toBe(read(".zcode-plugin/plugin.json").description);
+    const match = /(\d+)\s*session\s*tools/.exec(codex.description);
+    expect(match, ".codex-plugin description 缺少 session 工具数声明").not.toBeNull();
+    expect(Number(match![1])).toBe(MALO_TOOLS.length);
+  });
+
   it("routes tool calls to page operations", async () => {
     const session = fakeSession();
     await invokeMaloTool("navigate", { url: "https://example.com", settle_ms: 100 }, session);
