@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.18
+
+- **租约按持有者隔离。**`POST /v1/leases` 新增可选 `holder`（1-128 字符）：带了它的
+  请求只和「同 `agent_id` + 同 `holder`」的租约复用。此前同 agent 名的多个进程共用
+  一个租约，先跑完的 `release` 会把并行进程的会话一起放掉。Python 客户端
+  `acquire_lease` 自动带进程级 holder，并要求 daemon 具备 `lease.holder` 能力
+  （`features` 新增该项）；不带 holder 的调用沿用按 agent 名复用，两者互不接管。
+- **并发冷启动只拉起一个 daemon。**客户端 `ensure_daemon` 加数据目录级启动锁，
+  就绪判据从「端口开着」改为「broker.json 的 token 被运行中的 daemon 认」——端口被
+  别的进程占着、文件里是陈旧 token 时明确报错并给出排查命令，不再拉起也不复用。
+  daemon 侧加 Electron 单实例锁，多出来的进程在碰任何存储之前退出。此前 N 个进程
+  同时冷启动会拉起 N 个 Electron、N-1 个因端口冲突退出。
+- **长操作不再被回收腰斩。**租约上还有请求在处理中时到期不回收而是续一期；有操作
+  正在进行、或窗口显示给人看的 session 不被空闲回收。关闭 session 时进行中的操作
+  立刻以 `E_SESSION_NOT_FOUND` 失败，不挂在已销毁的页面上。此前一条跑得比 TTL 长的
+  请求会让连接直接断开、客户端拿不到任何诊断。
+- **人关掉窗口不结束会话。**页面视图换一个隐藏窗口接着托管，事件流记一条
+  `window.closed`，下次 `watch` 原样弹回。此前窗口销毁后 `watch` 静默无效，还回报
+  `window: "shown"`。窗口只在第一次显示时居中，之后位置归人管（拖动过的不被拉回）。
+- **工具条按需创建。**agent 驱动的隐藏会话不再预建工具条渲染进程，到第一次给人看
+  时才建，页面视口不变。
+- **限额与启动清扫。**每 lease 默认 session 数 4→16（`--max-sessions`），新增 daemon
+  全局上限 `--max-sessions-total`（默认 64），`GET /v1/state` 带 `session_budget`。
+  每次启动清掉上次运行遗留的匿名 partition 与超过 `--artifact-ttl-hours`（默认 168）
+  的租约目录：匿名 partition 在会话关闭时仍被 Chromium 握着、进程退出前又写回来，
+  此前无界累积。profile 的 partition 永不触碰。
+- `GET /v1/sessions` 的会话摘要新增 `visible`（窗口此刻是否显示在屏幕上）。
+
 ## 0.1.17
 
 - **`.codex-plugin/plugin.json` 描述对齐 `.zcode-plugin`。**Codex 清单的 description

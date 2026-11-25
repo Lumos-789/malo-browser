@@ -61,6 +61,13 @@ if (opts.proxyServer) {
 if (opts.mode === "daemon") {
   // Keep Chromium profile storage inside the malo data dir so one directory owns all state.
   app.setPath("userData", path.join(opts.dataDir, "chromium"));
+  // 同一数据目录只允许一个 daemon：多个进程同时拉起时（几个 agent 一起冷启动）只有先到的
+  // 活下来，其余在碰任何存储之前就退出——两个 Chromium 进程共用一份数据目录会互相写坏。
+  if (!app.requestSingleInstanceLock()) {
+    console.error(`[malo-browser] 已有 daemon 在使用数据目录 ${opts.dataDir}，本实例退出`);
+    app.exit(2);
+    process.exit(2);
+  }
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -98,6 +105,8 @@ app.whenReady().then(async () => {
         leaseTtlMs: opts.leaseTtlSeconds * 1000,
         sessionIdleMs: opts.sessionIdleSeconds * 1000,
         maxSessionsPerLease: opts.maxSessionsPerLease,
+        maxSessionsTotal: opts.maxSessionsTotal,
+        artifactTtlHours: opts.artifactTtlHours,
         idleExitMs: opts.idleExitSeconds * 1000,
         dataDir: opts.dataDir,
         onIdleExit: () => app.exit(0),

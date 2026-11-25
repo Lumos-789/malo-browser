@@ -67,6 +67,14 @@ visible window and does not take focus. Broker state is written to
 `~/.malo-browser/broker.json` (0600); routes, lease rules and the smoke script are
 documented in `docs/malo-browser.md`.
 
+Parallel work: a lease belongs to one client process. `clients/python/malo_client.py`
+sends a per-process `holder`, so processes that share an `agent_id` get separate
+leases and never release each other's sessions (the same process reuses its lease;
+hand-written calls without `holder` still reuse by `agent_id`). Several processes
+cold-starting at once spawn one daemon. A lease with a request still running does not
+expire, and a session with an operation in flight or a window shown to a human is never
+idle-reaped.
+
 Agents discover page tools with `GET /v1/tools` and invoke them through
 `POST /v1/sessions/:id/tools/<tool>`. Use `snapshot` for structured page content
 (text, headings, links, buttons, inputs, forms, tables, frames, dialogs and
@@ -99,7 +107,9 @@ Login walls and human checks: `watch` shows the real page in an inactive window
 `watch` call with `show:false`) with a native title bar and a browser toolbar
 (address bar plus back/forward/reload), and `login` either fills one-shot
 credentials or waits for the human handoff — a successful `login` hides the
-handoff window again unless `keep_visible: true`. Credentials stay in memory and
+handoff window again unless `keep_visible: true`. Closing the window by hand does
+not end the session: the page is re-hosted in a hidden window and the next `watch`
+brings it back with its state intact. Credentials stay in memory and
 are never written to events or responses.
 
 Persistent login state: create a session with `{"profile":"work"}` to keep
@@ -160,6 +170,10 @@ credentials. Chromium data for the daemon lives under `<data-dir>/chromium`.
 - `EADDRINUSE` → port occupied; stderr prints a self-help pointer. For the demo
   control API pass `--control-port`, for the daemon pass `--daemon-port`, and for
   a lease exhaust change `--port-min` / `--port-max`.
+- daemon exits at once with `已有 daemon 在使用数据目录` → another daemon already owns
+  that data directory: reuse it (the Python client does) or pass another `--data-dir`.
+- `E_RESOURCE_LIMIT` (429) naming `--max-sessions-total` → the daemon-wide session cap
+  is full; close sessions or raise the flag. Naming the lease cap → same, per lease.
 - Control API 401 → read the token from `<out>/control.json`; send it as
   `Authorization: Bearer <token>` or `x-demo-token: <token>`.
 - Director shows a MOCK marker → preload bridge missing; launch via

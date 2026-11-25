@@ -29,6 +29,8 @@ export type Options = {
   leaseTtlSeconds: number;
   sessionIdleSeconds: number;
   maxSessionsPerLease: number;
+  maxSessionsTotal: number;
+  artifactTtlHours: number;
   idleExitSeconds: number;
   dataDir: string;
   proxyServer: string | null;
@@ -63,6 +65,8 @@ export const KNOWN_FLAGS: readonly string[] = [
   "lease-ttl-seconds",
   "session-idle-seconds",
   "max-sessions",
+  "max-sessions-total",
+  "artifact-ttl-hours",
   "idle-exit-seconds",
   "data-dir",
   "proxy-server",
@@ -105,8 +109,10 @@ export const USAGE = `Malo Browser — 演示用浏览器
   --port-min=<n>             lease 端口池起点，默认 7411
   --port-max=<n>             lease 端口池终点，默认 7499
   --lease-ttl-seconds=<n>    lease 过期秒数，默认 300
-  --session-idle-seconds=<n> 空闲 session 回收秒数，默认 300
-  --max-sessions=<n>         每个 lease 最大 session 数，默认 4
+  --session-idle-seconds=<n> 空闲 session 回收秒数，默认 300（有操作在进行、或窗口显示给人看的 session 不回收）
+  --max-sessions=<n>         每个 lease 最大 session 数，默认 16（上限 64）
+  --max-sessions-total=<n>   整个 daemon 的 session 总上限，默认 64
+  --artifact-ttl-hours=<n>   租约目录（下载/失败截图/run report）保留小时数，默认 168；0=启动时不清理
   --idle-exit-seconds=<n>    无租约且无请求这么久就退出，默认 1800；0=不退出
   --data-dir=<dir>           malo-browser 数据目录，默认 ~/.malo-browser
   --proxy-server=<url>       Chromium 代理（如 http://127.0.0.1:7890），浏览器级，所有 session 生效
@@ -236,7 +242,8 @@ export function parseOptions(argv: string[]): Options {
   if (daemonPort >= portMin && daemonPort <= portMax) {
     throw new Error(`--daemon-port=${daemonPort} 不能落在 lease 端口池 ${portMin}-${portMax} 内`);
   }
-  const maxSessionsPerLease = readPositiveInteger(argv, "max-sessions", 4, 64);
+  const maxSessionsPerLease = readPositiveInteger(argv, "max-sessions", 16, 64);
+  const maxSessionsTotal = readPositiveInteger(argv, "max-sessions-total", 64, 4_096);
   const focusFlag = readFlag(argv, "focus-emulation");
   return {
     mode,
@@ -263,6 +270,8 @@ export function parseOptions(argv: string[]): Options {
     leaseTtlSeconds: readPositiveInteger(argv, "lease-ttl-seconds", 300, 86_400),
     sessionIdleSeconds: readPositiveInteger(argv, "session-idle-seconds", 300, 86_400),
     maxSessionsPerLease,
+    maxSessionsTotal,
+    artifactTtlHours: readNonNegativeInteger(argv, "artifact-ttl-hours", 168, 87_600),
     idleExitSeconds: readNonNegativeInteger(argv, "idle-exit-seconds", 1800, 86_400),
     dataDir: path.resolve(expandHome(readFlag(argv, "data-dir") ?? path.join(os.homedir(), ".malo-browser"))),
     proxyServer: readFlag(argv, "proxy-server") ?? null,

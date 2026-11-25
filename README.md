@@ -142,12 +142,22 @@ cat ~/.malo-browser/broker.json
 Defaults: broker `127.0.0.1:7410`, lease port pool `7411-7499`, data directory
 `~/.malo-browser`. A successful start prints one JSON line and writes
 `~/.malo-browser/broker.json` (0600) with `{endpoint, token, pid}`. Only one daemon may
-use a data directory: a healthy running instance makes the new process fail loudly, and
-a stale `broker.json` left by a stopped instance is overwritten.
+use a data directory: a process-level single-instance lock makes extra processes exit
+before touching any storage, a healthy running instance makes the new process fail
+loudly, and a stale `broker.json` left by a stopped instance is overwritten. Every start
+first removes anonymous partitions left by the previous run and lease directories older
+than `--artifact-ttl-hours`.
 
 Daemon flags: `--daemon-port=7410`, `--port-min=7411`, `--port-max=7499`,
-`--lease-ttl-seconds=300`, `--session-idle-seconds=300`, `--max-sessions=4`,
-`--data-dir=~/.malo-browser`.
+`--lease-ttl-seconds=300`, `--session-idle-seconds=300`, `--max-sessions=16`,
+`--max-sessions-total=64`, `--artifact-ttl-hours=168`, `--data-dir=~/.malo-browser`.
+
+Parallel work is the normal case. A lease belongs to one client process: the Python
+client sends a per-process `holder`, and a lease is reused only by the same holder, so
+processes that share an `agent_id` never release each other's sessions. Processes that
+cold-start together spawn exactly one daemon. A lease with a request still running does
+not expire, and a session with an operation in flight or a window shown to a human is
+never idle-reaped.
 
 A new session needs both the lease token and its own session token; a session token from
 session A cannot read session B (401). `width` / `height` are the page viewport, and the
@@ -445,8 +455,10 @@ to disk, events or responses; password fields read `[redacted]` and `assert valu
 password input is rejected instead of compared. A successful `login`
 hides the handoff window again (unless `keep_visible: true`), and the agent keeps the
 same session; `watch` stays visible until it is hidden explicitly, and a timed-out
-handoff window is not closed automatically. The login state survives only with a
-`profile`.
+handoff window is not closed automatically. Closing the window by hand does not end the
+session either: the page is re-hosted in a hidden window and the next `watch` brings it
+back with its state intact. The window is centred once and then stays where the human
+moved it. The login state survives only with a `profile`.
 
 ## Project layout
 

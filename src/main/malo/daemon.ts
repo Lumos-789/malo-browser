@@ -9,7 +9,9 @@ import { LeaseManager, type LeaseRecord } from "./lease-manager";
 import { maloVersion } from "./version";
 import { PortPool } from "./port-pool";
 import { ProfileStore } from "./profile-store";
+import { SessionBudget } from "./session-budget";
 import { SessionManager } from "./session-manager";
+import { sweepStartupData } from "./startup-sweep";
 
 export type MaloDaemonOptions = {
   brokerPort: number;
@@ -18,6 +20,10 @@ export type MaloDaemonOptions = {
   leaseTtlMs: number;
   sessionIdleMs: number;
   maxSessionsPerLease: number;
+  /** daemon 全局的会话上限（各租约合计）。 */
+  maxSessionsTotal: number;
+  /** 租约目录（下载、失败截图、run report）保留多少小时；0 = 启动时不清理。 */
+  artifactTtlHours: number;
   dataDir: string;
   brokerToken?: string;
   reaperIntervalMs?: number;
@@ -148,6 +154,20 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
   const brokerToken = options.brokerToken ?? crypto.randomBytes(32).toString("hex");
   const pool = new PortPool(options.portMin, options.portMax);
   const leases = new LeaseManager(options.leaseTtlMs);
+  const budget = new SessionBudget(options.maxSessionsTotal);
+  // 上次运行的残留（匿名分区、过期租约目录）在开始监听前清掉：这时还没有任何会话，不会误删在用的。
+  // 清理失败不拦启动——残留只是占盘，拦下来等于让所有 agent 都用不了；但要把原因喊出来。
+  try {
+    const swept = await sweepStartupData(dataDir, options.artifactTtlHours);
+    if (swept.anonymous_partitions > 0 || swept.lease_dirs > 0) {
+      console.error(
+        `[malo] 启动清扫：上次运行遗留的匿名分区 ${swept.anonymous_partitions} 个、` +
+          `超过 ${options.artifactTtlHours}h 的租约目录 ${swept.lease_dirs} 个已删除`,
+      );
+    }
+  } catch (error) {
+    console.error(`[malo] 启动清扫失败（不影响会话，残留会继续占盘）：${(error as Error).message}`);
+  }
   // 有活动就不该过期：createLease / heartbeat / 任何 lease 请求都刷新
   let lastActivityMs = Date.now();
   const touch = () => {
@@ -176,10 +196,11 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
     version: handshake.version,
     features: handshake.features,
     leaseTtlSeconds: handshake.leaseTtlSeconds,
-    createLease: async (agentId) => {
+    createLease: async (agentId, holderId) => {
       touch();
       const normalized = agentId.trim();
-      const existing = leases.list().find((lease) => lease.agentId === normalized);
+      // 同 agent 名 + 同持有者才复用：不同进程即使同名也各拿各的租约，谁 release 都放不掉对方的会话
+      const existing = leases.findByOwner(normalized, holderId);
       if (existing) {
         if (existing.expiresAtMs > Date.now()) return publicLease(existing, handshake);
         try {
@@ -196,7 +217,7 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
             `lease 端口池已耗尽：${options.portMin}-${options.portMax}`,
           );
         }
-        const lease = leases.create(agentId, port);
+        const lease = leases.create(agentId, port, Date.now(), holderId);
         const rootDir = path.join(dataDir, "leases", lease.id, "sessions");
         const manager = new SessionManager({
           leaseId: lease.id,
@@ -204,6 +225,7 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
           maxSessions: options.maxSessionsPerLease,
           profiles: profileStore,
           partitionsDir: path.join(dataDir, "chromium", "Partitions"),
+          budget,
         });
         try {
           const server = await startLeaseServer({
@@ -263,12 +285,19 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
         sessions: runtimes.get(lease.id)?.manager.list() ?? [],
       })),
       ports: pool.snapshot(),
+      session_budget: { used: budget.count, max: options.maxSessionsTotal },
     }),
   });
 
   const reaper = setInterval(() => {
     void (async () => {
-      for (const lease of leases.expire()) {
+      // 有请求正在处理的租约不回收：客户端活着在等一个长操作的结果（长批次、登录等待），
+      // 单条请求跑得比 TTL 长不该被腰斩——给它续一期，等这批请求回来再按常规回收。
+      const expired = leases.expire(
+        Date.now(),
+        (lease) => (runtimes.get(lease.id)?.server.inflight() ?? 0) > 0,
+      );
+      for (const lease of expired) {
         try {
           await teardownLease(lease, "expired");
         } catch (error) {

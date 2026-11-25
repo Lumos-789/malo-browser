@@ -18,6 +18,8 @@ export type MaloSessionSummary = {
   title: string;
   created_at: string;
   last_used_at: string;
+  /** 窗口此刻是否显示在屏幕上（watch / 登录接管打开的）。 */
+  visible: boolean;
 };
 
 export type MaloSessionCreated = MaloSessionSummary & {

@@ -14,6 +14,7 @@ import {
   removePartitionDir,
   validateProfileName,
 } from "./profile-store";
+import type { SessionBudget } from "./session-budget";
 
 export class SessionManager {
   private readonly sessions = new Map<string, BrowserSession>();
@@ -32,6 +33,8 @@ export class SessionManager {
       maxSessions: number;
       profiles: ProfileStore;
       partitionsDir?: string;
+      /** daemon 全局会话名额，各 lease 的 SessionManager 共用一份。 */
+      budget?: SessionBudget;
     },
   ) {
     if (!Number.isInteger(options.maxSessions) || options.maxSessions <= 0) {
@@ -52,6 +55,8 @@ export class SessionManager {
       );
     }
     const profile = input.profile === undefined ? undefined : validateProfileName(input.profile);
+    this.options.budget?.reserve();
+    let kept = false;
     this.creating += 1;
     let profileReserved = false;
     try {
@@ -80,6 +85,7 @@ export class SessionManager {
           throw error;
         }
       }
+      kept = true;
       return {
         ...session.summary(),
         session_token: session.token,
@@ -88,6 +94,7 @@ export class SessionManager {
       };
     } finally {
       this.creating -= 1;
+      if (!kept) this.options.budget?.release();
       // 成功路径上 touch 已把占用转交给 activeCount，失败路径上没有 touch；
       // 两条路径都要在锁内撤销 pending 登记，clearProfile 才不会对着已放弃的 create 空拒。
       if (profileReserved && profile !== undefined) {
@@ -123,7 +130,8 @@ export class SessionManager {
   async reapIdle(idleMs: number, now = Date.now()): Promise<string[]> {
     const removed: string[] = [];
     for (const [id, session] of this.sessions) {
-      if (session.idleMs(now) < idleMs) continue;
+      // 有操作在进行、或窗口正显示给人看：不算空闲，不回收
+      if (session.idleMs(now) < idleMs || session.isPinned()) continue;
       this.sessions.delete(id);
       try {
         await this.closeSession(session);
@@ -184,6 +192,7 @@ export class SessionManager {
       await session.close();
     } finally {
       if (session.profile !== null) this.options.profiles.releaseActive(session.profile);
+      this.options.budget?.release();
     }
   }
 

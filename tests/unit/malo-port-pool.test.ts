@@ -74,4 +74,31 @@ describe("LeaseManager", () => {
     expect(() => manager.heartbeat("missing")).toThrow(/不存在/);
     expect(() => new LeaseManager(0)).toThrow(/TTL/);
   });
+
+  it("reuses a lease only for the same agent and the same holder", () => {
+    const manager = new LeaseManager(1_000);
+    const processA = manager.create("yoda-test", 7411, 0, "holder-a");
+    const processB = manager.create("yoda-test", 7412, 0, "holder-b");
+    const legacy = manager.create("yoda-test", 7413, 0);
+
+    expect(manager.findByOwner("yoda-test", "holder-a")?.id).toBe(processA.id);
+    expect(manager.findByOwner("yoda-test", "holder-b")?.id).toBe(processB.id);
+    expect(manager.findByOwner(" yoda-test ", null)?.id).toBe(legacy.id);
+    // 旧客户端（不带 holder）不接管带持有者的租约；带持有者的也拿不到别人的
+    expect(manager.findByOwner("yoda-test", "holder-c")).toBeUndefined();
+    expect(manager.findByOwner("other-agent", "holder-a")).toBeUndefined();
+  });
+
+  it("keeps a due lease that the caller still needs and renews it by one TTL", () => {
+    const manager = new LeaseManager(1_000);
+    const busy = manager.create("busy", 7411, 0, "holder-a");
+    const idle = manager.create("idle", 7412, 0, "holder-b");
+
+    const expired = manager.expire(1_000, (lease) => lease.id === busy.id);
+    expect(expired.map((item) => item.id)).toEqual([idle.id]);
+    expect(manager.get(busy.id)?.expiresAtMs).toBe(2_000);
+    expect(manager.get(idle.id)).toBeUndefined();
+    // 续期后没到点的不动；再到期且没人在用时照常回收
+    expect(manager.expire(2_000, () => false).map((item) => item.id)).toEqual([busy.id]);
+  });
 });

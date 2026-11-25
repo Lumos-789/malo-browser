@@ -5,6 +5,7 @@ import { session as electronSession } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserSession } from "../../src/main/malo/browser-session";
 import { ProfileStore, profilePartition } from "../../src/main/malo/profile-store";
+import { SessionBudget } from "../../src/main/malo/session-budget";
 import { SessionManager } from "../../src/main/malo/session-manager";
 
 vi.mock("electron", () => ({
@@ -22,16 +23,17 @@ vi.mock("../../src/main/malo/browser-session", () => ({
 
 let sessionSeq = 0;
 
-function fakeSession(profile: string | null): BrowserSession {
+function fakeSession(profile: string | null, pinned = false): BrowserSession {
   sessionSeq += 1;
   const id = `sess-${sessionSeq}`;
   return {
     id,
     token: `token-${id}`,
     profile,
-    summary: () => ({ session_id: id, name: id }),
+    summary: () => ({ session_id: id, name: id, visible: false }),
     close: vi.fn(async () => undefined),
     isClosed: () => false,
+    isPinned: () => pinned,
     idleMs: () => 0,
     downloadsDir: `/tmp/${id}/downloads`,
     artifactsDir: `/tmp/${id}/artifacts`,
@@ -40,7 +42,7 @@ function fakeSession(profile: string | null): BrowserSession {
 
 const tmpDirs: string[] = [];
 
-async function harness(seedProfile?: string) {
+async function harness(seedProfile?: string, budget?: SessionBudget) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "malo-session-manager-"));
   tmpDirs.push(dir);
   const partitionsDir = path.join(dir, "partitions");
@@ -75,6 +77,7 @@ async function harness(seedProfile?: string) {
     maxSessions: 4,
     profiles,
     partitionsDir,
+    budget,
   });
   return { manager, profiles, partitionsDir, dir };
 }
@@ -181,5 +184,57 @@ describe("clearProfile 与并发 create 的互斥", () => {
     await expect(
       access(path.join(partitionsDir, "malo-profile-alpha")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+describe("空闲回收与全局名额", () => {
+  it("有操作在进行或窗口显示给人看的 session 不算空闲，其余照常回收", async () => {
+    const { manager } = await harness();
+    const busy = fakeSession(null, true);
+    const watching = fakeSession(null, true);
+    const idle = fakeSession(null, false);
+    vi.mocked(BrowserSession.create).mockReset();
+    vi.mocked(BrowserSession.create)
+      .mockResolvedValueOnce(busy)
+      .mockResolvedValueOnce(watching)
+      .mockResolvedValueOnce(idle);
+    await manager.create({});
+    await manager.create({});
+    await manager.create({});
+    for (const session of [busy, watching, idle]) {
+      vi.spyOn(session, "idleMs").mockReturnValue(10 * 60_000);
+    }
+
+    expect(await manager.reapIdle(300_000)).toEqual([idle.id]);
+    expect(busy.close).not.toHaveBeenCalled();
+    expect(watching.close).not.toHaveBeenCalled();
+    expect(idle.close).toHaveBeenCalledOnce();
+  });
+
+  it("全局名额跨 lease 共用：满了报 E_RESOURCE_LIMIT，关会话或建失败后归还", async () => {
+    const budget = new SessionBudget(2);
+    const leaseA = await harness(undefined, budget);
+    const leaseB = await harness(undefined, budget);
+    vi.mocked(BrowserSession.create).mockImplementation(async () => fakeSession(null));
+    const first = await leaseA.manager.create({});
+    expect(budget.count).toBe(1);
+
+    // 建到一半失败：名额要还回去，不能被一次失败永久占掉
+    vi.mocked(BrowserSession.create).mockRejectedValueOnce(new Error("stage create failed"));
+    await expect(leaseA.manager.create({})).rejects.toThrow("stage create failed");
+    expect(budget.count).toBe(1);
+
+    await leaseA.manager.create({});
+    expect(budget.count).toBe(2);
+    await expect(leaseB.manager.create({})).rejects.toMatchObject({
+      code: "E_RESOURCE_LIMIT",
+      message: expect.stringContaining("--max-sessions-total"),
+    });
+    expect(BrowserSession.create).toHaveBeenCalledTimes(3);
+
+    await leaseA.manager.close(first.session_id);
+    expect(budget.count).toBe(1);
+    await expect(leaseB.manager.create({})).resolves.toBeDefined();
+    expect(budget.count).toBe(2);
   });
 });

@@ -41,6 +41,8 @@ export type LeaseServerOptions = {
 export type LeaseServer = {
   port: number;
   url: string;
+  /** 正在处理中的请求数：有请求在跑，说明客户端活着在等结果，租约不该按 TTL 过期。 */
+  inflight(): number;
   close(): Promise<void>;
 };
 
@@ -90,15 +92,21 @@ function sessionToken(req: IncomingMessage): string | null {
 export async function startLeaseServer(options: LeaseServerOptions): Promise<LeaseServer> {
   if (options.token.trim() === "") throw new Error("lease token 不能为空");
   let closed = false;
+  let handling = 0;
   const server = createServer((req, res) => {
-    void handle(req, res).catch((error: unknown) => {
-      if (res.headersSent) {
-        res.end();
-        return;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      sendError(res, statusFor(error), codeFor(error), message, errorDetails(error));
-    });
+    handling += 1;
+    void handle(req, res)
+      .catch((error: unknown) => {
+        if (res.headersSent) {
+          res.end();
+          return;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        sendError(res, statusFor(error), codeFor(error), message, errorDetails(error));
+      })
+      .finally(() => {
+        handling -= 1;
+      });
   });
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -356,6 +364,7 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
   return {
     port,
     url: `http://${LOOPBACK}:${port}`,
+    inflight: () => handling,
     async close(): Promise<void> {
       if (closed) return;
       closed = true;

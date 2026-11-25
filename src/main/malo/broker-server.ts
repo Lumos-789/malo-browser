@@ -5,6 +5,7 @@ import {
 } from "node:http";
 import { isDemoError } from "../../shared/errors";
 import type { MaloLease } from "../../shared/malo";
+import { MALO_LEASE_REQUEST } from "../../shared/malo-tools";
 import { explainListenFailure } from "../tools";
 import {
   BadRequest,
@@ -26,7 +27,7 @@ export type BrokerServerOptions = {
   version: string;
   features: string[];
   leaseTtlSeconds: number;
-  createLease(agentId: string): Promise<MaloLease>;
+  createLease(agentId: string, holderId: string | null): Promise<MaloLease>;
   heartbeat(id: string): LeaseRecord;
   release(id: string): Promise<void>;
   list(): MaloLease[];
@@ -53,6 +54,16 @@ export function publicLease(
     features: handshake.features,
     ttl_seconds: handshake.leaseTtlSeconds,
   };
+}
+
+// holder = 持有者标识（客户端进程级唯一）。带了它的请求只和「同 agent 名 + 同 holder」
+// 的租约复用；不带 = 旧客户端，沿用只按 agent 名复用。
+function readHolder(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "string" || raw.trim() === "" || raw.trim().length > MALO_LEASE_REQUEST.holder.maxLength) {
+    throw new BadRequest("holder 必须是 1-128 字符的非空字符串（持有者标识）");
+  }
+  return raw.trim();
 }
 
 function statusFor(error: unknown): number {
@@ -126,7 +137,7 @@ export async function startBrokerServer(options: BrokerServerOptions): Promise<B
       const body = await readJsonObject(req);
       const agentId = typeof body.agent_id === "string" ? body.agent_id : "";
       if (agentId.trim() === "") throw new BadRequest("agent_id 必须是非空字符串");
-      sendJson(res, 201, await options.createLease(agentId));
+      sendJson(res, 201, await options.createLease(agentId, readHolder(body.holder)));
       return;
     }
     const match = /^\/v1\/leases\/([^/]+)\/heartbeat$/.exec(url.pathname);

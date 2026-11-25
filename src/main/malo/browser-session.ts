@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DemoError, stripErrorCode } from "../../shared/errors";
+import { DemoError, isDemoError, stripErrorCode } from "../../shared/errors";
 import type {
   MaloAction,
   MaloActionResult,
@@ -165,9 +165,42 @@ export class BrowserSession {
       title: `malo-browser - ${this.name}`,
       frame: true,
       toolbar: true,
+      onWindowClosed: () => {
+        this.record("window.closed");
+      },
     });
     this.driver = new ElectronPageDriver(this.stage.view.webContents);
     this.capture = new NetworkCapture(this.driver);
+  }
+
+  // 驱动操作进行中的计数：回收器据此放过这个会话；会话关闭时进行中的操作立刻失败，
+  // 不会挂在已销毁的页面上把租约一直占着。
+  private inflight = 0;
+  private readonly lifetime = new AbortController();
+
+  private async running<T>(op: () => Promise<T>): Promise<T> {
+    this.assertOpen();
+    this.inflight += 1;
+    let onAbort: (() => void) | undefined;
+    try {
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(this.closedWhileRunning());
+        if (this.lifetime.signal.aborted) onAbort();
+        else this.lifetime.signal.addEventListener("abort", onAbort, { once: true });
+      });
+      return await Promise.race([op(), aborted]);
+    } catch (error) {
+      // 会话在操作进行中被关闭：底层对象已销毁，错误统一成 E_SESSION_NOT_FOUND
+      if (this.closed && !isDemoError(error)) throw this.closedWhileRunning();
+      throw error;
+    } finally {
+      if (onAbort) this.lifetime.signal.removeEventListener("abort", onAbort);
+      this.inflight -= 1;
+    }
+  }
+
+  private closedWhileRunning(): DemoError {
+    return new DemoError("E_SESSION_NOT_FOUND", `session 在操作进行中被关闭：${this.id}`);
   }
 
   static async create(options: BrowserSessionOptions): Promise<BrowserSession> {
@@ -327,6 +360,14 @@ export class BrowserSession {
     return this.closed;
   }
 
+  /**
+   * 空闲回收不碰的会话：有操作正在进行，或者窗口正显示给人看
+   * （人还在登录/核对，5 分钟没发请求是常态）。
+   */
+  isPinned(): boolean {
+    return !this.closed && (this.inflight > 0 || this.stage.isVisible());
+  }
+
   summary(): MaloSessionSummary {
     const wc = this.stage.view.webContents;
     return {
@@ -337,13 +378,22 @@ export class BrowserSession {
       title: wc.getTitle(),
       created_at: this.createdAt,
       last_used_at: new Date(this.lastUsedMs).toISOString(),
+      visible: this.stage.isVisible(),
     };
   }
 
-  async navigate(
+  navigate(
     rawUrl: string,
     timeoutMs = 30_000,
     settleMs = 6_000,
+  ): Promise<MaloLightObservation> {
+    return this.running(() => this.navigatePage(rawUrl, timeoutMs, settleMs));
+  }
+
+  private async navigatePage(
+    rawUrl: string,
+    timeoutMs: number,
+    settleMs: number,
   ): Promise<MaloLightObservation> {
     this.assertOpen();
     const url = validateUrl(rawUrl);
@@ -436,6 +486,7 @@ export class BrowserSession {
     let lastNetworkIdleMs = this.driver.lastLifecycleAt("networkAlmostIdle") ?? 0;
 
     while (Date.now() - started < maxMs) {
+      this.assertOpen();
       const stamp = await withTimeout(
         this.driver.evaluate<{ url: string; ready: string; elements: number }>(
           "({url: location.href, ready: document.readyState, elements: document.querySelectorAll('*').length})",
@@ -869,12 +920,17 @@ export class BrowserSession {
     return result;
   }
 
-  async assertExpectations(input: MaloAssertInput): Promise<MaloAssertResult> {
+  assertExpectations(input: MaloAssertInput): Promise<MaloAssertResult> {
+    return this.running(() => this.checkExpectations(input));
+  }
+
+  private async checkExpectations(input: MaloAssertInput): Promise<MaloAssertResult> {
     this.assertOpen();
     this.touch();
     const timeoutMs = Math.max(0, Math.min(120_000, Math.floor(input.timeout_ms ?? 5_000)));
     const started = Date.now();
     for (;;) {
+      this.assertOpen();
       const state = await this.readAssertState(input);
       if (state.invalid_selector !== null) {
         throw new DemoError("E_BAD_REQUEST", `assert 选择器无效：${state.invalid_selector}`);
@@ -979,7 +1035,11 @@ export class BrowserSession {
     return target;
   }
 
-  async act(action: MaloAction, timeoutMs = 10_000): Promise<MaloActionResult> {
+  act(action: MaloAction, timeoutMs = 10_000): Promise<MaloActionResult> {
+    return this.running(() => this.runAction(action, timeoutMs));
+  }
+
+  private async runAction(action: MaloAction, timeoutMs: number): Promise<MaloActionResult> {
     this.assertOpen();
     this.touch();
     const boundedTimeout = Math.max(100, Math.min(120_000, Math.floor(timeoutMs)));
@@ -1040,7 +1100,11 @@ export class BrowserSession {
     };
   }
 
-  async login(input: MaloLoginInput): Promise<MaloLoginResult> {
+  login(input: MaloLoginInput): Promise<MaloLoginResult> {
+    return this.running(() => this.runLogin(input));
+  }
+
+  private async runLogin(input: MaloLoginInput): Promise<MaloLoginResult> {
     this.assertOpen();
     this.touch();
     const requestedMode = input.mode ?? "auto";
@@ -1205,6 +1269,7 @@ export class BrowserSession {
     const deadline = Date.now() + timeoutMs;
     let attempts = 0;
     while (Date.now() < deadline) {
+      this.assertOpen();
       attempts += 1;
       const state = await withTimeout(
         this.driver.evaluate<{
@@ -1705,6 +1770,8 @@ export class BrowserSession {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    // 进行中的操作立刻以 E_SESSION_NOT_FOUND 失败，不挂在已销毁的页面上
+    this.lifetime.abort();
     this.record("session.closed", { profile: this.profile });
     this.detachHooks?.();
     this.detachHooks = null;
@@ -1728,6 +1795,7 @@ export class BrowserSession {
   private abortCreate(): void {
     if (this.closed) return;
     this.closed = true;
+    this.lifetime.abort();
     this.detachHooks?.();
     this.detachHooks = null;
     try {

@@ -130,12 +130,19 @@ cat ~/.malo-browser/broker.json
 
 默认：broker `127.0.0.1:7410`，lease 端口池 `7411-7499`，数据目录 `~/.malo-browser`。
 启动成功会打印一行 JSON，并写入 `~/.malo-browser/broker.json`（0600），内容为
-`{endpoint, token, pid}`。同一个数据目录只允许一个 daemon：已有实例仍健康时，新进程
-会明确报错；已停止实例留下的 `broker.json` 会被识别为陈旧文件并覆盖。
+`{endpoint, token, pid}`。同一个数据目录只允许一个 daemon：进程级单实例锁让多出来的进程
+在碰任何存储之前就退出，已有实例仍健康时新进程会明确报错；已停止实例留下的
+`broker.json` 会被识别为陈旧文件并覆盖。每次启动先清掉上次运行遗留的匿名分区，以及超过
+`--artifact-ttl-hours` 的租约目录。
 
 daemon 参数：`--daemon-port=7410`、`--port-min=7411`、`--port-max=7499`、
-`--lease-ttl-seconds=300`、`--session-idle-seconds=300`、`--max-sessions=4`、
-`--data-dir=~/.malo-browser`。
+`--lease-ttl-seconds=300`、`--session-idle-seconds=300`、`--max-sessions=16`、
+`--max-sessions-total=64`、`--artifact-ttl-hours=168`、`--data-dir=~/.malo-browser`。
+
+并行是常态。租约归一个客户端进程所有：Python 客户端自动带进程级 `holder`，租约只被同一个
+holder 复用，所以共用同一个 `agent_id` 的多个进程不会互相放掉对方的会话。多个进程同时
+冷启动只会拉起一个 daemon。还有请求在处理中的租约不会到期；有操作正在进行、或窗口正显示
+给人看的 session 不会被空闲回收。
 
 新 session 需要同时带 lease token 和自己的 session token；拿 session A 的 token 访问
 session B 会返回 401。`width` / `height` 是页面视口尺寸，人工接管窗口的工具条不占用
@@ -406,7 +413,9 @@ localStorage、IndexedDB 与 HTTP cache 都留在源浏览器。
 不进事件、不回显；密码框固定读 `[redacted]`，且对密码框做 `assert value` 会被拒绝而不是
 拿脱敏串比较。`login` 成功后窗口自动隐藏（`keep_visible:
 true` 可留给人继续操作），agent 继续用同一个 session；`watch` 打开的窗口要显式关闭才
-隐藏，超时的人工接管窗口也不会自动关闭。登录态只有指定 `profile` 时才保留。
+隐藏，超时的人工接管窗口也不会自动关闭。人手动关掉窗口同样不结束会话：页面换一个隐藏窗口
+接着托管，下次 `watch` 原样弹回来。窗口只在第一次显示时居中，之后人拖到哪就在哪。
+登录态只有指定 `profile` 时才保留。
 
 ## 项目结构
 
@@ -504,8 +513,8 @@ scripts/
   后退/前进/刷新。
 - 只做回环：不支持远程访问、多用户服务化，也没有审批流或远程部署。
 - 隐藏模式依赖焦点仿真；`--focus-emulation=false` 时物理点击会被丢弃。
-- agent 运行时一个数据目录只跑一个 daemon，每 lease 默认 4 个 session，空闲 300 秒
-  回收；不做连续视频推流。
+- agent 运行时一个数据目录只跑一个 daemon，每 lease 默认 16 个 session、整个 daemon
+  默认 64 个，空闲 300 秒回收（有操作正在进行或窗口显示给人看的除外）；不做连续视频推流。
 - 登录处理是自动识别加 selector 覆盖，不是按站点配置的适配层。
 - 站点可能在网络层 / 人机校验层拦自动化或无头浏览器，见
   [docs/malo-web-compat.md](docs/malo-web-compat.md)。`network_capture` 只覆盖页面

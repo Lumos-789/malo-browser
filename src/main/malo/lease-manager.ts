@@ -3,6 +3,12 @@ import crypto from "node:crypto";
 export type LeaseRecord = {
   id: string;
   agentId: string;
+  /**
+   * 持有者标识（客户端进程级唯一）。同 agent 名且同持有者才复用租约：不同进程即使
+   * 用同一个 agent 名也各拿各的租约，谁 release 都放不掉对方的会话。
+   * null = 没带持有者的旧客户端，只按 agent 名复用（也不接管带持有者的租约）。
+   */
+  holderId: string | null;
   port: number;
   token: string;
   createdAtMs: number;
@@ -19,12 +25,18 @@ export class LeaseManager {
     }
   }
 
-  create(agentId: string, port: number, now = Date.now()): LeaseRecord {
+  create(
+    agentId: string,
+    port: number,
+    now = Date.now(),
+    holderId: string | null = null,
+  ): LeaseRecord {
     const normalized = agentId.trim();
     if (normalized === "") throw new Error("agent_id 不能为空");
     const record: LeaseRecord = {
       id: `lease-${crypto.randomUUID()}`,
       agentId: normalized,
+      holderId,
       port,
       token: crypto.randomBytes(32).toString("hex"),
       createdAtMs: now,
@@ -33,6 +45,13 @@ export class LeaseManager {
     };
     this.leases.set(record.id, record);
     return record;
+  }
+
+  findByOwner(agentId: string, holderId: string | null): LeaseRecord | undefined {
+    const normalized = agentId.trim();
+    return [...this.leases.values()].find(
+      (lease) => lease.agentId === normalized && lease.holderId === holderId,
+    );
   }
 
   get(id: string): LeaseRecord | undefined {
@@ -56,10 +75,19 @@ export class LeaseManager {
     return lease;
   }
 
-  expire(now = Date.now()): LeaseRecord[] {
+  /**
+   * 回收到期的租约。`keep` 返回 true 的租约不回收而是续一期——留给「有请求正在处理」的
+   * 租约：客户端活着在等一个长操作的结果，单条请求跑得比 TTL 长不该被腰斩。
+   */
+  expire(now = Date.now(), keep?: (lease: LeaseRecord) => boolean): LeaseRecord[] {
     const expired: LeaseRecord[] = [];
     for (const lease of this.leases.values()) {
-      if (lease.expiresAtMs <= now) expired.push(lease);
+      if (lease.expiresAtMs > now) continue;
+      if (keep?.(lease)) {
+        lease.expiresAtMs = now + this.ttlMs;
+        continue;
+      }
+      expired.push(lease);
     }
     for (const lease of expired) this.leases.delete(lease.id);
     return expired;

@@ -44,20 +44,28 @@ electron . --mode=daemon \
   --port-max=7499 \
   --lease-ttl-seconds=300 \
   --session-idle-seconds=300 \
-  --max-sessions=4 \
+  --max-sessions=16 \
+  --max-sessions-total=64 \
+  --artifact-ttl-hours=168 \
   --idle-exit-seconds=1800 \
   --data-dir=~/.malo-browser
 ```
 
-同一个数据目录只允许一个 daemon。已有实例仍健康时，新进程会明确报错，不会抢占端口。
+同一个数据目录只允许一个 daemon，由进程级单实例锁保证：几个 agent 同时冷启动时只有先到的
+活下来，其余在碰任何存储之前就退出（客户端另有启动锁，正常情况下根本不会多拉起）。
 已停止实例留下的 `broker.json` 会被识别为陈旧文件并覆盖。
+
+每次启动先清扫上次运行的残留（此时还没有任何会话，不会误删在用的）：
+匿名会话遗留的 partition 目录一律清掉——会话关闭时 Chromium 仍握着文件，`rm` 之后它退出前
+又把目录写回来，所以只能在下次启动时清；租约目录（下载、失败截图、run report）超过
+`--artifact-ttl-hours` 的删掉，`0` 表示不清。profile 的 partition（`malo-profile-*`）永不碰。
 
 ### 握手：先问版本和能力，别等调用失败
 
 `/health`（broker 与每个 lease 都有）、`broker.json`、以及 `POST /v1/leases` 的响应都带：
 
-- `version`：包版本，例如 `0.1.8`
-- `features`：能力清单，随工具 schema 自动推导（目前是 `observe.screenshot_clip`）
+- `version`：包版本，例如 `0.1.18`
+- `features`：能力清单，随工具 schema 自动推导（`observe.screenshot_clip`、`lease.holder`）
 - `ttl_seconds`（仅租约响应）：本 daemon 的租约 TTL
 
 客户端应当在**拿到租约后、正式干活之前**比对 `features`，缺能力就立刻失败并提示升级，
@@ -72,6 +80,9 @@ TTL 到期就回收（默认 300s）。**任何通过鉴权的 lease 请求都�
 有活动就不该过期。所以长批任务不会跑到第 5 分钟端口就被收走；
 `POST /v1/leases/:id/heartbeat` 仍然保留，给「长时间不发请求但要占住端口」的客户端显式续期。
 `/health` 不算活动（不需要鉴权，不能借它续命）。
+
+单条请求跑得比 TTL 长也一样安全：租约上**还有请求在处理中**时到期不回收，而是续一期，
+等这批请求回来再按常规回收（客户端活着在等结果，长批次、登录等待不该被腰斩）。
 
 ### 空闲退出
 
@@ -114,7 +125,11 @@ curl -X POST http://127.0.0.1:7410/v1/leases \
 
 规则：
 
-- 同一 `agent_id` 在租约有效期内重复申请会复用原租约
+- **租约按持有者发**：请求里带 `holder`（1-128 字符的持有者标识）时，只有「同 `agent_id` + 同
+  `holder`」才复用原租约。Python 客户端自动带上进程级唯一标识，所以同一个 agent 名的多个
+  进程各拿各的租约，谁的 `release` 都放不掉并行兄弟的会话；同一进程里重复申请照旧复用
+- 不带 `holder` 的请求（旧客户端、手写 curl）沿用老规则：同 `agent_id` 复用；它们既拿不到
+  带持有者的租约，也不会被后者接管
 - 每个 lease 有独立 token，端口只绑定 `127.0.0.1`
 - 心跳续租：`POST /v1/leases/:id/heartbeat`
 - 主动释放：`DELETE /v1/leases/:id`
@@ -154,6 +169,9 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/navigate \
 
 `width` / `height` 是页面视口尺寸：人工接管窗口顶部的工具条不占用这两个值，截图也是
 `width` x `height`（乘以 DPR）。
+
+`GET /v1/sessions` 列出本租约的会话，每条带 `visible`（窗口此刻是否显示在屏幕上）；
+broker 的 `GET /v1/state` 汇总全部租约的会话和全局会话名额 `session_budget`。
 
 ## 登录态 profile
 
@@ -479,7 +497,10 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/login \
 - 凭据只存在于本次调用内存：不落盘、不进事件、不回显；快照里密码框的 `value` 固定为空串并标记 `sensitive: true`（`[redacted]` 只出现在 `interactive[].text`）
 - 登录态只有指定 `profile` 时才保留，未指定就随 session 一起清掉
 - `login` 成功后窗口自动隐藏，agent 继续用同一个 session；`keep_visible: true` 可留给人继续操作；`watch` 打开的窗口保持可见，显式再调 `watch`（`show:false`）才收起
-- 超时的人工接管窗口不会自动关闭，人处理完再调 `watch` 收起
+- 超时的人工接管窗口不会自动关闭，人处理完再调 `watch` 收起；显示给人看的 session 不会被空闲回收
+- **人点红色关闭钮不结束会话**：同一个页面视图立刻换一个隐藏窗口接着托管，事件流里记一条
+  `window.closed`，页面状态原样保留；agent 下次调 `watch`（`show:true`）窗口就回来
+- 窗口只在第一次显示时摆到工作区正中，之后位置归人管——人拖动过的窗口不会被拉回来
 
 ## 安全与资源边界
 
@@ -489,15 +510,18 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/login \
 - 只允许 `http:` / `https:` 导航，拒绝 URL 内嵌 credentials
 - `window.open` 默认拒绝，权限请求默认拒绝
 - 请求体上限 1MB，只接受 `application/json`
-- 每 lease 默认最多 4 个 session；超出返回 429
-- 空闲 session 默认 300 秒回收
+- 每 lease 默认最多 16 个 session，整个 daemon 默认最多 64 个（`--max-sessions` /
+  `--max-sessions-total`）；任一超限都返回 429，报错点名是哪个上限
+- 空闲 session 默认 300 秒回收；有操作正在进行、或窗口正显示给人看的 session 不回收
+- 关闭 session 时，进行中的操作立刻以 `E_SESSION_NOT_FOUND` 失败，不会挂在已销毁的页面上
 - 不同 session 的 cookies、storage、下载、页面和事件互不共享；共享 profile 的多个
   session 之间，下载仍按发起它的 webContents 归属到各自 session 的 `downloads/`
 - 数据目录与 session 目录按 0700 建立，`broker.json` / `profiles.json` / 失败截图 /
   run report 一律 0600；录制成片同样 0600
 - `profile` 是显式共享单元：同名 profile 的 session 共用 cookies，名字由调用方自己隔离
 - profile 数据只落在 `<data-dir>/chromium`，清理走 `DELETE /v1/profiles/:name`
-- 匿名 session 关闭时会清空 storage 并删除自己的 partition 目录，不留在磁盘上
+- 匿名 session 关闭时会清空 storage 并删除自己的 partition 目录，不留在磁盘上；Chromium 在
+  daemon 退出前可能把目录写回来，所以每次启动再清一遍（见「启动」）
 
 ## 焦点与窗口
 
@@ -511,6 +535,7 @@ daemon 在 macOS 使用 `accessory` 激活策略并隐藏 Dock，不创建可见
 所有会出现在屏幕上的窗口一律带原生标题栏（可拖动、可缩放），行为一致：人工接管
 窗口顶部还有一条浏览器工具条——后退、前进、刷新和地址栏（只接受 `http` / `https`，
 回车跳转，地址随页面同步）；演示舞台自 0.1.13 起同样带框，不再有裸无边框窗口。
+工具条到窗口第一次给人看时才建：agent 驱动的隐藏会话不为它多养一个渲染进程。
 录制（`hidden` 模式）与截图产物只取页面内容，窗口是否有框不影响画面。
 
 ## 验证
@@ -532,6 +557,10 @@ snapshot/extract、fill/click/hover/focus/history、session token 越权拒绝�
 账号密码登录与错误凭据、人工接管登录、密码不回显/不入事件、
 profile 登录态恢复与匿名 session 隔离、
 session 关闭、lease 释放和端口归还。
+
+多进程并行、长操作不被回收、启动清扫、窗口关掉后重开这些走单元测试
+（`npm test`）；窗口与工具条的真实 Electron 行为另有
+`npm run smoke:toolbar`（隐藏窗口即可跑完）。
 
 ## v0.1 不做
 

@@ -126,7 +126,9 @@ describe("cli daemon flags", () => {
     expect(options.portMax).toBe(7499);
     expect(options.leaseTtlSeconds).toBe(300);
     expect(options.sessionIdleSeconds).toBe(300);
-    expect(options.maxSessionsPerLease).toBe(4);
+    expect(options.maxSessionsPerLease).toBe(16);
+    expect(options.maxSessionsTotal).toBe(64);
+    expect(options.artifactTtlHours).toBe(168);
     expect(options.idleExitSeconds).toBe(1800);
     expect(options.dataDir.endsWith(".malo-browser")).toBe(true);
   });
@@ -140,6 +142,8 @@ describe("cli daemon flags", () => {
       "--lease-ttl-seconds=60",
       "--session-idle-seconds=30",
       "--max-sessions=2",
+      "--max-sessions-total=3",
+      "--artifact-ttl-hours=0",
       "--data-dir=/tmp/malo-test",
     ]);
     expect(options.daemonPort).toBe(7450);
@@ -148,6 +152,8 @@ describe("cli daemon flags", () => {
     expect(options.leaseTtlSeconds).toBe(60);
     expect(options.sessionIdleSeconds).toBe(30);
     expect(options.maxSessionsPerLease).toBe(2);
+    expect(options.maxSessionsTotal).toBe(3);
+    expect(options.artifactTtlHours).toBe(0);
     expect(options.dataDir).toBe("/tmp/malo-test");
   });
 
@@ -171,6 +177,9 @@ describe("cli daemon flags", () => {
     expect(() => parseOptions(["--mode=daemon", "--session-idle-seconds=1.5"])).toThrow(/整数/);
     expect(() => parseOptions(["--mode=daemon", "--max-sessions=0"])).toThrow(/正数/);
     expect(() => parseOptions(["--mode=daemon", "--max-sessions=65"])).toThrow(/1-64/);
+    expect(() => parseOptions(["--mode=daemon", "--max-sessions-total=0"])).toThrow(/正数/);
+    expect(() => parseOptions(["--mode=daemon", "--artifact-ttl-hours=-1"])).toThrow(/0-87600/);
+    expect(() => parseOptions(["--mode=daemon", "--artifact-ttl-hours=1.5"])).toThrow(/0-87600/);
   });
 });
 

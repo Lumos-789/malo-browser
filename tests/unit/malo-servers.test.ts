@@ -80,30 +80,32 @@ function sessionHeaders(token: string): Record<string, string> {
 async function startBrokerHarness(): Promise<{
   server: BrokerServer;
   manager: LeaseManager;
+  createLease: ReturnType<typeof vi.fn>;
   lease: MaloLease;
 }> {
   const manager = new LeaseManager(60_000);
   let lease: MaloLease | null = null;
+  const createLease = vi.fn(async (agentId: string, holderId: string | null) => {
+    const record = manager.create(agentId, 7411, Date.now(), holderId);
+    lease = {
+      lease_id: record.id,
+      agent_id: record.agentId,
+      endpoint: `http://127.0.0.1:${record.port}`,
+      token: record.token,
+      expires_at: new Date(record.expiresAtMs).toISOString(),
+      version: VERSION,
+      features: FEATURES,
+      ttl_seconds: TTL_SECONDS,
+    };
+    return lease;
+  });
   const server = await startBrokerServer({
     port: 0,
     token: BROKER_TOKEN,
     version: VERSION,
     features: FEATURES,
     leaseTtlSeconds: TTL_SECONDS,
-    createLease: async (agentId) => {
-      const record = manager.create(agentId, 7411);
-      lease = {
-        lease_id: record.id,
-        agent_id: record.agentId,
-        endpoint: `http://127.0.0.1:${record.port}`,
-        token: record.token,
-        expires_at: new Date(record.expiresAtMs).toISOString(),
-        version: VERSION,
-        features: FEATURES,
-        ttl_seconds: TTL_SECONDS,
-      };
-      return lease;
-    },
+    createLease,
     heartbeat: (id) => {
       try {
         return manager.heartbeat(id);
@@ -131,6 +133,7 @@ async function startBrokerHarness(): Promise<{
   return {
     server,
     manager,
+    createLease,
     get lease() {
       if (!lease) throw new Error("lease 尚未创建");
       return lease;
@@ -139,6 +142,32 @@ async function startBrokerHarness(): Promise<{
 }
 
 describe("broker server", () => {
+  it("passes the holder through and rejects malformed ones", async () => {
+    const harness = await startBrokerHarness();
+    const create = (body: Record<string, unknown>) =>
+      request(harness.server.port, {
+        method: "POST",
+        path: "/v1/leases",
+        headers: brokerHeaders(),
+        body: JSON.stringify(body),
+      });
+
+    expect((await create({ agent_id: "agent-a", holder: "proc-1" })).status).toBe(201);
+    // 不带 holder = 旧客户端：沿用只按 agent 名复用，不能报错
+    expect((await create({ agent_id: "agent-a" })).status).toBe(201);
+    expect(harness.createLease.mock.calls).toEqual([
+      ["agent-a", "proc-1"],
+      ["agent-a", null],
+    ]);
+
+    for (const holder of ["", "   ", 42, "x".repeat(129)]) {
+      const bad = await create({ agent_id: "agent-a", holder });
+      expect(bad.status).toBe(400);
+      expect(JSON.parse(bad.body).error.message).toContain("holder");
+    }
+    expect(harness.createLease).toHaveBeenCalledTimes(2);
+  });
+
   it("serves health without a token and rejects foreign hosts", async () => {
     const { server } = await startBrokerHarness();
     const health = await request(server.port, { path: "/health" });
@@ -482,6 +511,33 @@ describe("lease server", () => {
     });
     expect(denied.status).toBe(401);
     expect(onActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts requests in flight so a long call keeps its lease from expiring", async () => {
+    const harness = await startLeaseHarness();
+    const session = harness.sessions.get("session-a")!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    session.login.mockImplementationOnce(async () => {
+      await gate;
+      return { mode: "watch", ok: false, reason: "timeout" };
+    });
+    expect(harness.server.inflight()).toBe(0);
+
+    const pending = request(harness.server.port, {
+      method: "POST",
+      path: "/v1/sessions/session-a/tools/login",
+      headers: sessionHeaders(SESSION_A),
+      body: JSON.stringify({ mode: "watch" }),
+    });
+    await vi.waitFor(() => expect(session.login).toHaveBeenCalled());
+    expect(harness.server.inflight()).toBe(1);
+
+    release();
+    expect((await pending).status).toBe(200);
+    await vi.waitFor(() => expect(harness.server.inflight()).toBe(0));
   });
 
   it("navigates, observes, acts and streams events on the scoped session", async () => {
