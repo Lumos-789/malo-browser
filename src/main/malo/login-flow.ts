@@ -93,7 +93,7 @@ export async function runLogin(session: SessionInternals, input: MaloLoginInput)
     session.record("login.action_error", { reason: waitReason });
   }
 
-  const ok = waitReason === "success";
+  const ok = waitReason === "success" || waitReason === "human_done";
   const observation = await observePage(session, "light", 2_000).catch(() => fallbackObservation(session));
   if (watchResult) {
     if (!ok && input.keep_visible !== true) {
@@ -179,6 +179,8 @@ export async function waitForLogin(
   while (Date.now() < deadline) {
     session.assertOpen();
     attempts += 1;
+    // 人说做完了就是做完了：扫码、验证码、短信这些页面没法自己判定的登录，由人给结论
+    if (session.takeHumanDone()) return { attempts, reason: "human_done" };
     const state = await withTimeout(
       session.driver.evaluate<{
         url: string;

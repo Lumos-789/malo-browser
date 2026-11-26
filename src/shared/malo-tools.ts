@@ -311,6 +311,11 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
         text: { type: "string" },
         state: { type: "string", enum: ["attached", "visible", "hidden"], default: "visible" },
         timeout_ms: { type: "integer", minimum: 0, maximum: 120000, default: 10000 },
+        human: {
+          type: "boolean",
+          description:
+            "Wait until the human clicks 完成 (Done) on the session window's toolbar. Pair it with watch: show the window, let the human work, then wait_for human to pick the handoff back up.",
+        },
         ...FRAME_TARGET_PROPERTIES,
       },
       additionalProperties: false,

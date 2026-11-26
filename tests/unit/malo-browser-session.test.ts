@@ -15,8 +15,12 @@ const fake = vi.hoisted(() => {
     const openHandler = { current: null as null | ((details: PopupDetails) => { action: string }) };
     return {
       destroyed: false,
+      id: 7,
       session: {
-        setPermissionRequestHandler() {},
+        permissionHandler: null as null | ((contents: unknown, permission: string, callback: (granted: boolean) => void) => void),
+        setPermissionRequestHandler(handler: (contents: unknown, permission: string, callback: (granted: boolean) => void) => void) {
+          this.permissionHandler = handler;
+        },
         on() {},
         async clearStorageData() {},
         async clearCache() {},
@@ -60,6 +64,10 @@ const fake = vi.hoisted(() => {
       this.visible = false;
     }
     resize() {}
+    humanStates: Array<{ done: boolean; paused: boolean; stopped: boolean }> = [];
+    setHumanState(state: { done: boolean; paused: boolean; stopped: boolean }) {
+      this.humanStates.push({ ...state });
+    }
     isVisible() {
       return this.visible;
     }
@@ -333,5 +341,100 @@ describe("BrowserSession 事件留档", () => {
       "d",
       "session.closed",
     ]);
+  });
+});
+
+describe("BrowserSession 人的信号", () => {
+  it("暂停期间动作类操作被拦成 E_PAUSED_BY_HUMAN，观察类照常；点继续后恢复", async () => {
+    const session = await newSession();
+    const stage = stageOf(session);
+
+    session.humanSignal("pause");
+    await expect(session.navigate("https://example.com")).rejects.toMatchObject({
+      code: "E_PAUSED_BY_HUMAN",
+      message: expect.stringContaining("「继续」"),
+    });
+    await expect(session.act({ type: "click", selector: "#x" })).rejects.toMatchObject({
+      code: "E_PAUSED_BY_HUMAN",
+    });
+    // 等待不动页面：人点「完成」之后 agent 靠它把交接接回来
+    await expect(session.act({ type: "sleep", ms: 0 })).resolves.toBeDefined();
+    driverOf().evaluate.mockResolvedValue({ ...ASSERT_STATE, links: [], buttons: [], inputs: [], frames: [] });
+    await expect(session.snapshot({ max_chars: 0 })).resolves.toMatchObject({ url: "about:blank" });
+
+    session.humanSignal("resume");
+    driverOf().evaluate.mockResolvedValue({ ...ASSERT_STATE });
+    await expect(session.act({ type: "sleep", ms: 0 })).resolves.toBeDefined();
+    expect(session.summary().human).toEqual({ done: false, paused: false, stopped: false });
+    // 面板跟着状态走：暂停时推一次、继续时再推一次
+    expect(stage.humanStates.map((state) => state.paused)).toEqual([true, false]);
+    expect(session.eventsAfter(0).events.map((event) => event.type)).toEqual(
+      expect.arrayContaining(["human.paused", "human.resumed"]),
+    );
+    await session.close();
+  });
+
+  it("停止是终态：之后不能再操作页面，也收不到别的信号", async () => {
+    const session = await newSession();
+
+    session.humanSignal("stop");
+    session.humanSignal("resume");
+    session.humanSignal("done");
+    await expect(session.act({ type: "click", selector: "#x" })).rejects.toMatchObject({
+      code: "E_STOPPED_BY_HUMAN",
+      message: expect.stringContaining("「停止」"),
+    });
+    await expect(session.login({ mode: "watch" })).rejects.toMatchObject({ code: "E_STOPPED_BY_HUMAN" });
+    expect(session.summary().human).toEqual({ done: false, paused: false, stopped: true });
+    await session.close();
+  });
+
+  it("wait_for human 等到人点「完成」才返回，并且只消费一次", async () => {
+    const session = await newSession();
+    const pending = session.act({ type: "wait_for", human: true, timeout_ms: 5_000 });
+    await vi.waitFor(() => expect(session.isPinned()).toBe(true));
+
+    session.humanSignal("done");
+    await expect(pending).resolves.toBeDefined();
+    expect(session.summary().human?.done).toBe(false);
+
+    const second = session.act({ type: "wait_for", human: true, timeout_ms: 300 });
+    await expect(second).rejects.toMatchObject({ code: "E_STEP_TIMEOUT", message: expect.stringContaining("「完成」") });
+    await session.close();
+  });
+
+  it("wait_for human 不能带 frame", async () => {
+    const session = await newSession();
+    await expect(session.act({ type: "wait_for", human: true, frame: 0 } as never)).rejects.toMatchObject({
+      code: "E_BAD_REQUEST",
+    });
+    await session.close();
+  });
+
+  it("页面权限默认全拒；点名放开的才放行，并留下 granted / denied 事件", async () => {
+    const ask = (session: BrowserSession, permission: string) => {
+      const partition = stageOf(session).view.webContents.session;
+      const answers: boolean[] = [];
+      partition.permissionHandler?.({ id: 7 }, permission, (granted) => answers.push(granted));
+      partition.permissionHandler?.({ id: 99 }, permission, (granted) => answers.push(granted));
+      return answers;
+    };
+    const plain = await newSession();
+    expect(ask(plain, "clipboard-read")).toEqual([false, false]);
+    expect(plain.eventsAfter(0).events.at(-1)?.type).toBe("permission.denied");
+
+    const allowed = await newSession({ permissions: ["clipboard-read", "clipboard-read"] });
+    expect(allowed.summary().permissions).toEqual(["clipboard-read"]);
+    expect(ask(allowed, "clipboard-read")).toEqual([true, false]);
+    expect(ask(allowed, "geolocation")).toEqual([false, false]);
+    expect(allowed.eventsAfter(0).events.map((event) => event.type)).toEqual(
+      expect.arrayContaining(["permission.granted", "permission.denied"]),
+    );
+    await plain.close();
+    await allowed.close();
+  });
+
+  it("拒绝创建带不可放开权限的会话", async () => {
+    await expect(BrowserSession.create({ leaseId: "l", rootDir: os.tmpdir(), permissions: ["fileSystem"] as never[] })).rejects.toThrow(/不可放开的页面权限/);
   });
 });

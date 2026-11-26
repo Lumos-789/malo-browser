@@ -60,6 +60,8 @@ export class SessionManager {
     profile?: string;
     /** 这个会话对 window.open 的处理方式，见 BrowserSessionOptions.popup。 */
     popup?: "deny" | "adopt";
+    /** 放开的页面权限，见 GRANTABLE_PERMISSIONS。 */
+    permissions?: string[];
   }): Promise<MaloSessionCreated> {
     if (this.sessions.size + this.creating >= this.options.maxSessions) {
       throw new DemoError(
@@ -90,6 +92,7 @@ export class SessionManager {
         partitionsDir: this.options.partitionsDir,
         allowFocus: this.options.allowFocus === true,
         popup: input.popup,
+        permissions: input.permissions,
         onPageLost: (lost) => this.losePage(lost),
       });
       if (session.isPageLost()) {

@@ -1138,4 +1138,54 @@ describe("lease server session options", () => {
     expect(JSON.parse(bad.body).error.message).toContain("popup");
     expect(vi.mocked(harness.manager.create)).toHaveBeenCalledTimes(2);
   });
+
+  it("passes an explicit permission allowlist to the manager and refuses permissions that cannot be granted", async () => {
+    const harness = await startLeaseHarness();
+    const create = (body: Record<string, unknown>) =>
+      request(harness.server.port, {
+        method: "POST",
+        path: "/v1/sessions",
+        headers: leaseHeaders(),
+        body: JSON.stringify(body),
+      });
+
+    expect((await create({ permissions: ["clipboard-read", "fullscreen", "clipboard-read"] })).status).toBe(201);
+    expect(vi.mocked(harness.manager.create).mock.calls[0][0]).toMatchObject({
+      permissions: ["clipboard-read", "fullscreen"],
+    });
+    expect((await create({})).status).toBe(201);
+    expect(vi.mocked(harness.manager.create).mock.calls[1][0]).toMatchObject({ permissions: [] });
+
+    for (const permissions of ["clipboard-read", ["fileSystem"], ["openExternal"], [42]]) {
+      const bad = await create({ permissions });
+      expect(bad.status).toBe(400);
+      expect(JSON.parse(bad.body).error.message).toContain("permissions");
+    }
+    expect(vi.mocked(harness.manager.create)).toHaveBeenCalledTimes(2);
+  });
+
+  it("answers a human pause or stop with 409 so the agent can tell it from a broken request", async () => {
+    const harness = await startLeaseHarness();
+    const session = harness.sessions.get("session-a")!;
+    session.act.mockRejectedValueOnce(new DemoError("E_PAUSED_BY_HUMAN", "人已在面板上点了「暂停」"));
+    session.navigate.mockRejectedValueOnce(new DemoError("E_STOPPED_BY_HUMAN", "人已在面板上点了「停止」"));
+    const act = request(harness.server.port, {
+      method: "POST",
+      path: "/v1/sessions/session-a/actions",
+      headers: sessionHeaders(SESSION_A),
+      body: JSON.stringify({ action: { type: "click", selector: "#x" } }),
+    });
+    const navigate = request(harness.server.port, {
+      method: "POST",
+      path: "/v1/sessions/session-a/navigate",
+      headers: sessionHeaders(SESSION_A),
+      body: JSON.stringify({ url: "https://example.com" }),
+    });
+
+    const [paused, stopped] = await Promise.all([act, navigate]);
+    expect(paused.status).toBe(409);
+    expect(JSON.parse(paused.body).error.code).toBe("E_PAUSED_BY_HUMAN");
+    expect(stopped.status).toBe(409);
+    expect(JSON.parse(stopped.body).error.code).toBe("E_STOPPED_BY_HUMAN");
+  });
 });

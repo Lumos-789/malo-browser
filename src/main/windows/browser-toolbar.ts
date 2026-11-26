@@ -4,7 +4,9 @@ import {
   normalizeAddress,
   type BrowserToolbarNavigateResult,
   type BrowserToolbarState,
+  type HumanPanelState,
 } from "../../shared/toolbar";
+import type { HumanSignal } from "../malo/human-signals";
 
 export const TOOLBAR_HEIGHT = 44;
 
@@ -14,6 +16,15 @@ const CHANNELS = {
   forward: "toolbar:forward",
   reload: "toolbar:reload",
   state: "toolbar:state",
+  human: "human:state",
+} as const;
+
+// 人给 agent 发的信号：完成 / 暂停 / 继续 / 停止
+const SIGNAL_CHANNELS = {
+  done: "human:done",
+  pause: "human:pause",
+  resume: "human:resume",
+  stop: "human:stop",
 } as const;
 
 const PRELOAD_PATH = path.join(__dirname, "../../preload/browser-toolbar.js");
@@ -32,15 +43,24 @@ function wireIpc(): void {
   ipcMain.handle(CHANNELS.back, (event) => toolbars.get(event.sender.id)?.back());
   ipcMain.handle(CHANNELS.forward, (event) => toolbars.get(event.sender.id)?.forward());
   ipcMain.handle(CHANNELS.reload, (event) => toolbars.get(event.sender.id)?.reload());
+  for (const [signal, channel] of Object.entries(SIGNAL_CHANNELS) as [HumanSignal, string][]) {
+    ipcMain.handle(channel, (event) => toolbars.get(event.sender.id)?.humanSignal(signal));
+  }
 }
 
 export class BrowserToolbar {
   readonly view: WebContentsView;
   private readonly page: WebContentsView;
+  private readonly onHumanSignal?: (signal: HumanSignal) => void;
+  private human: HumanPanelState = { done: false, paused: false, stopped: false };
 
-  constructor(page: WebContentsView) {
+  constructor(
+    page: WebContentsView,
+    options: { onHumanSignal?: (signal: HumanSignal) => void } = {},
+  ) {
     wireIpc();
     this.page = page;
+    this.onHumanSignal = options.onHumanSignal;
     this.view = new WebContentsView({
       webPreferences: {
         preload: PRELOAD_PATH,
@@ -52,8 +72,28 @@ export class BrowserToolbar {
     });
     toolbars.set(this.view.webContents.id, this);
     this.watchPage();
-    this.view.webContents.on("did-finish-load", () => this.pushState());
+    this.view.webContents.on("did-finish-load", () => {
+      this.pushState();
+      this.pushHuman();
+    });
     void this.view.webContents.loadURL(toolbarDataUrl());
+  }
+
+  /** 人在工具条上点了完成 / 暂停 / 继续 / 停止。 */
+  humanSignal(signal: HumanSignal): void {
+    this.onHumanSignal?.(signal);
+  }
+
+  /** 会话把当前的人机状态同步到工具条（按钮可用性、暂停/继续的切换）。 */
+  setHuman(state: HumanPanelState): void {
+    this.human = { ...state };
+    this.pushHuman();
+  }
+
+  private pushHuman(): void {
+    const toolbar = this.view.webContents;
+    if (!toolbar || toolbar.isDestroyed()) return;
+    toolbar.send(CHANNELS.human, this.human);
   }
 
   layout(width: number, height: number): void {
@@ -173,6 +213,11 @@ const TOOLBAR_HTML = `<!doctype html>
   }
   input:focus { outline: none; border-color: #7fa3ff; box-shadow: 0 0 0 3px rgba(90, 140, 255, .16); }
   input.invalid { border-color: #e07a7a; box-shadow: 0 0 0 3px rgba(224, 122, 122, .16); }
+  .human { display: inline-flex; align-items: center; gap: 4px; flex: none; margin-left: 8px; padding-left: 8px; border-left: 1px solid #e3e6ea; }
+  .human .state { min-width: 0; font-size: 12px; color: #6b7280; white-space: nowrap; }
+  .human .state.on { color: #1f242c; }
+  button.signal { width: auto; padding: 0 8px; font-size: 12px; }
+  button.signal.stop { color: #b42318; }
   @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
@@ -187,6 +232,12 @@ const TOOLBAR_HTML = `<!doctype html>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v4.5h-4.5"/></svg>
   </button>
   <input id="address" spellcheck="false" autocomplete="off" placeholder="输入网址，回车打开" />
+  <span class="human" title="这里是你和 agent 的交接：做完点「完成」，不想让它继续动页面就点「暂停」或「停止」">
+    <span id="human-state" class="state"></span>
+    <button id="human-done" class="signal" title="告诉 agent：我做完了，可以继续">完成</button>
+    <button id="human-pause" class="signal" title="暂停期间 agent 不能操作这个页面">暂停</button>
+    <button id="human-stop" class="signal stop" title="让 agent 停手：它不能再操作这个页面">停止</button>
+  </span>
 <script>
   const api = window.maloToolbar;
   const address = document.getElementById("address");
@@ -195,10 +246,18 @@ const TOOLBAR_HTML = `<!doctype html>
   const reload = document.getElementById("reload");
   const reloadIcon = reload.querySelector("svg");
   let currentUrl = "";
+  const humanState = document.getElementById("human-state");
+  const doneButton = document.getElementById("human-done");
+  const pauseButton = document.getElementById("human-pause");
+  const stopButton = document.getElementById("human-stop");
+  let paused = false;
 
   back.addEventListener("click", () => api.back());
   forward.addEventListener("click", () => api.forward());
   reload.addEventListener("click", () => api.reload());
+  doneButton.addEventListener("click", () => api.done());
+  pauseButton.addEventListener("click", () => api[paused ? "resume" : "pause"]());
+  stopButton.addEventListener("click", () => api.stop());
 
   address.addEventListener("focus", () => address.select());
   address.addEventListener("keydown", (event) => {
@@ -222,6 +281,16 @@ const TOOLBAR_HTML = `<!doctype html>
   address.addEventListener("blur", () => {
     address.classList.remove("invalid");
     if (currentUrl) address.value = currentUrl;
+  });
+
+  api.onHuman((state) => {
+    paused = state.paused;
+    pauseButton.textContent = state.paused ? "继续" : "暂停";
+    doneButton.disabled = state.done || state.stopped;
+    pauseButton.disabled = state.stopped;
+    stopButton.disabled = state.stopped;
+    humanState.textContent = state.stopped ? "已停止" : state.paused ? "已暂停" : state.done ? "已完成" : "";
+    humanState.classList.toggle("on", state.stopped || state.paused || state.done);
   });
 
   api.onState((state) => {

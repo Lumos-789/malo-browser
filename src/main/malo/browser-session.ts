@@ -30,8 +30,17 @@ import { runAction } from "./actions/run-action";
 import { checkExpectations } from "./assert-flow";
 import { EventLog } from "./event-log";
 import { extractElements, type ExtractInput } from "./extract";
+import {
+  HUMAN_BLOCK_MESSAGES,
+  applyHumanSignal,
+  consumeHumanDone,
+  humanBlock,
+  initialHumanState,
+  type HumanSignal,
+} from "./human-signals";
 import { runLogin } from "./login-flow";
 import { navigatePage } from "./navigation";
+import { GRANTABLE_PERMISSIONS } from "./permissions";
 import { observePage } from "./observation";
 import { attachPartitionHooks } from "./partition-hooks";
 import { removePartitionDir } from "./profile-store";
@@ -81,6 +90,8 @@ export class BrowserSession {
   private lastUsedMs = Date.now();
   popupSeq = 0;
   lastPopup: MaloPopupInfo | null = null;
+  human = initialHumanState();
+  readonly permissions: string[];
   readonly failedRequests: MaloNetworkInfo["failures"] = [];
   readonly consoleErrors: MaloNetworkInfo["console_errors"] = [];
   navigationState: MaloNavigationDiagnostics | null = null;
@@ -96,6 +107,13 @@ export class BrowserSession {
     this.downloadsDir = path.join(options.rootDir, this.id, "downloads");
     this.artifactsDir = path.join(options.rootDir, this.id, "artifacts");
     this.eventsLog = path.join(this.artifactsDir, "events.jsonl");
+    const unknownPermission = (options.permissions ?? []).find(
+      (permission) => !(GRANTABLE_PERMISSIONS as readonly string[]).includes(permission),
+    );
+    if (unknownPermission !== undefined) {
+      throw new Error(`不可放开的页面权限：${unknownPermission}；可选值：${GRANTABLE_PERMISSIONS.join("、")}`);
+    }
+    this.permissions = [...new Set(options.permissions ?? [])];
     this.log = new EventLog(this.eventsLog, options.eventLimit);
     const viewport = {
       width: options.width ?? DEFAULT_VIEWPORT.width,
@@ -115,6 +133,7 @@ export class BrowserSession {
       onWindowClosed: () => {
         this.record("window.closed");
       },
+      onHumanSignal: (signal) => this.humanSignal(signal),
     });
     this.driver = new ElectronPageDriver(this.stage.view.webContents);
     this.capture = new NetworkCapture(this.driver);
@@ -215,7 +234,9 @@ export class BrowserSession {
     this.detachHooks = attachPartitionHooks(partitionSession, {
       webContentsId: wc.id,
       onPermissionRequested: (permission) => {
-        this.record("permission.denied", { permission });
+        const granted = this.permissions.includes(permission);
+        this.record(granted ? "permission.granted" : "permission.denied", { permission });
+        return granted;
       },
       onDownload: (_event, item) => {
         const target = path.join(
@@ -352,14 +373,58 @@ export class BrowserSession {
       created_at: this.createdAt,
       last_used_at: new Date(this.lastUsedMs).toISOString(),
       visible: this.stage.isVisible(),
+      human: { ...this.human },
+      permissions: [...this.permissions],
     };
   }
 
-  navigate(
+  /** 人在 watch 窗口的工具条上点了完成 / 暂停 / 继续 / 停止。 */
+  humanSignal(signal: HumanSignal): void {
+    const next = applyHumanSignal(this.human, signal);
+    if (next.event === null) return;
+    this.human = next.state;
+    this.record(next.event);
+    this.stage.setHumanState(this.human);
+  }
+
+  /** agent 要动页面之前查一下：人喊了暂停或停止就不能动。观察类操作不走这里。 */
+  assertAgentMayAct(): void {
+    const block = humanBlock(this.human);
+    if (block !== null) throw new DemoError(block, HUMAN_BLOCK_MESSAGES[block]);
+  }
+
+  /** 取走人点过的「完成」：拿到后清掉并同步面板，下一轮交接还能再点。 */
+  takeHumanDone(): boolean {
+    const taken = consumeHumanDone(this.human);
+    if (!taken.done) return false;
+    this.human = taken.state;
+    this.stage.setHumanState(this.human);
+    this.record("human.done_taken");
+    return true;
+  }
+
+  async waitHumanDone(timeoutMs: number): Promise<void> {
+    this.assertOpen();
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      this.assertOpen();
+      if (this.takeHumanDone()) return;
+      if (Date.now() >= deadline) {
+        throw new DemoError(
+          "E_STEP_TIMEOUT",
+          `${timeoutMs}ms 内人没有在面板上点「完成」：窗口要先用 watch 显示出来，工具条上才有这个按钮`,
+        );
+      }
+      await sleep(100);
+    }
+  }
+
+  async navigate(
     rawUrl: string,
     timeoutMs = 30_000,
     settleMs = 6_000,
   ): Promise<MaloLightObservation> {
+    this.assertAgentMayAct();
     return this.running(() => navigatePage(this, rawUrl, timeoutMs, settleMs));
   }
 
@@ -400,7 +465,9 @@ export class BrowserSession {
     return target;
   }
 
-  act(action: MaloAction, timeoutMs = 10_000): Promise<MaloActionResult> {
+  async act(action: MaloAction, timeoutMs = 10_000): Promise<MaloActionResult> {
+    // 等待与休眠不动页面：人点「完成」之后 agent 正靠 wait_for 把这一轮交接接回来
+    if (action.type !== "wait_for" && action.type !== "sleep") this.assertAgentMayAct();
     return this.running(() => runAction(this, action, timeoutMs));
   }
 
@@ -422,6 +489,7 @@ export class BrowserSession {
     }
     if (show) {
       this.stage.showForHuman(focus ? "focused" : "inactive");
+      this.stage.setHumanState(this.human);
       this.record("watch.shown", { focus });
     } else {
       this.stage.hide();
@@ -438,7 +506,8 @@ export class BrowserSession {
     };
   }
 
-  login(input: MaloLoginInput): Promise<MaloLoginResult> {
+  async login(input: MaloLoginInput): Promise<MaloLoginResult> {
+    this.assertAgentMayAct();
     return this.running(() => runLogin(this, input));
   }
 

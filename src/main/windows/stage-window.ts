@@ -1,7 +1,9 @@
 import { BaseWindow, WebContentsView, screen } from "electron";
 import type { WindowMode } from "../../shared/types";
+import type { HumanPanelState } from "../../shared/toolbar";
 import { BrowserToolbar, TOOLBAR_HEIGHT } from "./browser-toolbar";
 import { dockPresenceHidden, dockPresenceShown } from "./dock-presence";
+import type { HumanSignal } from "../malo/human-signals";
 
 export type StageOptions = {
   width: number;
@@ -18,6 +20,8 @@ export type StageOptions = {
    * 接着托管同一个页面视图：会话不随窗口结束，下次显示时页面原样还在。
    */
   onWindowClosed?: () => void;
+  /** 人在工具条上点了完成 / 暂停 / 继续 / 停止。 */
+  onHumanSignal?: (signal: HumanSignal) => void;
 };
 
 export class StageWindow {
@@ -108,10 +112,15 @@ export class StageWindow {
     return this.host;
   }
 
+  /** 把人机状态同步到工具条（按钮可用性、暂停/继续）。 */
+  setHumanState(state: HumanPanelState): void {
+    this.bar?.setHuman(state);
+  }
+
   /** 工具条按需创建：agent 驱动的隐藏会话不为它多养一个渲染进程。 */
   ensureToolbar(): BrowserToolbar | null {
     if (!this.options.toolbar || this.bar) return this.bar;
-    this.bar = new BrowserToolbar(this.view);
+    this.bar = new BrowserToolbar(this.view, { onHumanSignal: this.options.onHumanSignal });
     const window = this.host;
     if (window.isDestroyed()) return this.bar;
     window.contentView.addChildView(this.bar.view);

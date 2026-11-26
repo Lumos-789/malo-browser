@@ -82,7 +82,7 @@ class FakePartition implements PartitionHost {
   }
 }
 
-function makeHook(webContentsId: number) {
+function makeHook(webContentsId: number, allow: (permission: string) => boolean = () => false) {
   const calls = {
     permissions: [] as string[],
     failures: [] as WebRequestDetails[],
@@ -91,7 +91,10 @@ function makeHook(webContentsId: number) {
   };
   const hook: PartitionHook = {
     webContentsId,
-    onPermissionRequested: (permission) => calls.permissions.push(permission),
+    onPermissionRequested: (permission) => {
+      calls.permissions.push(permission);
+      return allow(permission);
+    },
     onRequestFailed: (details) => calls.failures.push(details),
     onMainFrameCompleted: (statusCode) => calls.completed.push(statusCode),
     onDownload: (_event, item) => {
@@ -152,7 +155,7 @@ describe("partition hooks", () => {
     expect(second.calls.completed).toEqual([404]);
   });
 
-  it("always denies permission requests and only notifies the owner", () => {
+  it("denies permission requests by default and only notifies the owner", () => {
     const partition = new FakePartition();
     const first = makeHook(1);
     attachPartitionHooks(partition as never, first.hook);
@@ -160,6 +163,21 @@ describe("partition hooks", () => {
     expect(partition.requestPermission(1, "geolocation")).toBe(false);
     expect(partition.requestPermission(99, "geolocation")).toBe(false);
     expect(first.calls.permissions).toEqual(["geolocation"]);
+  });
+
+  it("grants exactly what the owning session put on its allowlist", () => {
+    const partition = new FakePartition();
+    const first = makeHook(1, (permission) => permission === "clipboard-read");
+    const second = makeHook(2);
+    attachPartitionHooks(partition as never, first.hook);
+    attachPartitionHooks(partition as never, second.hook);
+
+    expect(partition.requestPermission(1, "clipboard-read")).toBe(true);
+    expect(partition.requestPermission(1, "geolocation")).toBe(false);
+    // 同一个 profile 下的另一个会话没有放开任何权限
+    expect(partition.requestPermission(2, "clipboard-read")).toBe(false);
+    expect(first.calls.permissions).toEqual(["clipboard-read", "geolocation"]);
+    expect(second.calls.permissions).toEqual(["clipboard-read"]);
   });
 
   it("writes a download into the owning session and refuses an unowned one", () => {

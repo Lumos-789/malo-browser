@@ -20,6 +20,10 @@ export type MaloSessionSummary = {
   last_used_at: string;
   /** 窗口此刻是否显示在屏幕上（watch / 登录接管打开的）。 */
   visible: boolean;
+  /** 人在面板上发过的信号：done 等 agent 来取；paused / stopped 期间 agent 不能操作页面。 */
+  human?: { done: boolean; paused: boolean; stopped: boolean };
+  /** 这个会话放开的页面权限。 */
+  permissions?: string[];
 };
 
 export type MaloSessionCreated = MaloSessionSummary & {
@@ -331,6 +335,7 @@ export type MaloLoginInput = {
 export type MaloLoginResult = {
   mode: "password" | "watch";
   ok: boolean;
+  /** success = 页面自己判定已登录；human_done = 人在面板上点了「完成」。 */
   reason: string;
   profile: string | null;
   final_url: string;
@@ -441,6 +446,8 @@ export type MaloWaitAction = FrameTarget & {
   type: "wait_for";
   selector?: string;
   text?: string;
+  /** 等人在 watch 窗口的工具条上点「完成」。 */
+  human?: boolean;
   state?: "attached" | "visible" | "hidden";
   timeout_ms?: number;
 };

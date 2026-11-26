@@ -1,7 +1,7 @@
 import { DemoError, stripErrorCode } from "../../../shared/errors";
 import type { MaloAction, MaloActionResult } from "../../../shared/malo";
 import { observePage } from "../observation";
-import { resolveContext, type FrameRef } from "../frames";
+import { mainContext, resolveContext, type FrameRef } from "../frames";
 import type { SessionInternals } from "../session-internals";
 import { fill, focus, press, select, type, uploadFile } from "./input";
 import { click, drag, hover, scroll, scrollIntoView } from "./pointer";
@@ -72,7 +72,14 @@ export async function executeAction(
   if (!handler) {
     throw new DemoError("E_UNSUPPORTED", `未知动作：${String((action as { type?: unknown }).type ?? "")}`);
   }
-  const ctx = await resolveContext(session, readFrameRef(action, FRAMED_ACTIONS.has(name)));
+  const ref = readFrameRef(action, FRAMED_ACTIONS.has(name));
+  if (name === "wait_for" && (action as { human?: unknown }).human === true) {
+    if (ref.frame !== undefined || ref.frame_url !== undefined) {
+      throw new DemoError("E_BAD_REQUEST", "wait_for human 不接受 frame 参数");
+    }
+    return handler(session, mainContext(session), action, timeoutMs);
+  }
+  const ctx = await resolveContext(session, ref);
   return handler(session, ctx, action, timeoutMs);
 }
 

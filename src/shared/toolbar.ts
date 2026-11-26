@@ -6,6 +6,13 @@ export type BrowserToolbarState = {
   loading: boolean;
 };
 
+/** 人对 agent 发的信号在面板上的样子：做完了 / 暂停中 / 已停止。 */
+export type HumanPanelState = {
+  done: boolean;
+  paused: boolean;
+  stopped: boolean;
+};
+
 export type BrowserToolbarNavigateResult = {
   ok: boolean;
   error?: string;
@@ -17,6 +24,11 @@ export type BrowserToolbarApi = {
   forward(): Promise<void>;
   reload(): Promise<void>;
   onState(listener: (state: BrowserToolbarState) => void): () => void;
+  done(): Promise<void>;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  stop(): Promise<void>;
+  onHuman(listener: (state: HumanPanelState) => void): () => void;
 };
 
 export function normalizeAddress(input: string): string | null {

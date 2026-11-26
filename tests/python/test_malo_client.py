@@ -292,8 +292,8 @@ class DaemonStartupTests(ClientCase):
         with mock.patch.object(malo, "_spawn_daemon") as spawn, mock.patch("os.kill") as kill:
             with self.assertRaisesRegex(malo.MaloError, "CDP 调试口 .* 未开"):
                 malo.ensure_daemon(broker_file=self.broker_file, debug_port=1)
-            # 端口被别的进程占着、又没有 broker token：同样不拉起
-            self.broker_file.write_text("{}")
+            # 端口被别的进程占着、又没有 broker token：同样不拉起（端口用假 daemon 的，不碰真实机器）
+            self.broker_file.write_text(json.dumps({"endpoint": self.daemon.endpoint}))
             with self.assertRaisesRegex(malo.MaloError, "没有 broker token"):
                 malo.ensure_daemon(broker_file=self.broker_file)
         spawn.assert_not_called()

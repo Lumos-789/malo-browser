@@ -10,6 +10,13 @@ import type {
 import type { ElectronPageDriver } from "../electron-page-driver";
 import type { StageWindow } from "../windows/stage-window";
 import type { BrowserSession } from "./browser-session";
+import {
+  HUMAN_BLOCK_MESSAGES,
+  humanBlock,
+  type AgentBlock,
+  type HumanSignal,
+  type HumanState,
+} from "./human-signals";
 import type { NetworkCapture } from "./network-capture";
 
 export type BrowserSessionOptions = {
@@ -31,6 +38,8 @@ export type BrowserSessionOptions = {
    * adopt 把目标地址在同一个页面打开，适合「点开新窗口的链接」这类流程。
    */
   popup?: "deny" | "adopt";
+  /** 放开的页面权限（见 GRANTABLE_PERMISSIONS）；不点名的默认拒绝。 */
+  permissions?: string[];
 };
 
 /**
@@ -43,6 +52,7 @@ export type SessionInternals = {
   readonly stage: StageWindow;
   readonly driver: ElectronPageDriver;
   readonly capture: NetworkCapture;
+  readonly human: HumanState;
   readonly failedRequests: MaloNetworkInfo["failures"];
   readonly consoleErrors: MaloNetworkInfo["console_errors"];
   navigationState: MaloNavigationDiagnostics | null;
@@ -63,7 +73,13 @@ export type SessionInternals = {
     width?: number;
     height?: number;
   }): Promise<MaloWatchResult>;
+  /** 取走人点过的「完成」信号（登录交接用）；没有就返回 false。 */
+  takeHumanDone(): boolean;
+  /** 等人在面板上点「完成」，取走这个信号；超时抛 E_STEP_TIMEOUT。 */
+  waitHumanDone(timeoutMs: number): Promise<void>;
 };
+
+export type { AgentBlock, HUMAN_BLOCK_MESSAGES, humanBlock, HumanSignal, HumanState };
 
 export type WatchInput = {
   show?: boolean;

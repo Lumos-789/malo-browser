@@ -48,7 +48,8 @@ export type PartitionHost = {
 
 export type PartitionHook = {
   webContentsId: number;
-  onPermissionRequested(permission: string): void;
+  /** 返回是否放行：会话按自己的权限白名单决定，没点名的权限一律拒绝。 */
+  onPermissionRequested(permission: string): boolean;
   onRequestFailed(details: WebRequestDetails): void;
   onMainFrameCompleted(statusCode: number): void;
   onDownload(event: DownloadEventLike, item: DownloadItemLike): void;
@@ -71,8 +72,7 @@ function ownerOf(hub: Hub, contentsId: number | undefined): PartitionHook | null
 
 function wire(host: PartitionHost, hub: Hub): void {
   host.setPermissionRequestHandler((contents, permission, callback) => {
-    ownerOf(hub, contents?.id)?.onPermissionRequested(permission);
-    callback(false);
+    callback(ownerOf(hub, contents?.id)?.onPermissionRequested(permission) ?? false);
   });
   host.on("will-download", (event, item, contents) => {
     const hook = ownerOf(hub, contents?.id);

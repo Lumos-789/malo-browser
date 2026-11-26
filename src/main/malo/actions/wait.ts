@@ -19,12 +19,17 @@ async function waitUntil(
   throw describe();
 }
 
-export const waitFor: ActionHandler<"wait_for"> = async (_session, ctx, action, timeoutMs) => {
+export const waitFor: ActionHandler<"wait_for"> = async (session, ctx, action, timeoutMs) => {
   if (action.timeout_ms !== undefined && (!Number.isFinite(action.timeout_ms) || action.timeout_ms < 0)) {
     throw new DemoError("E_UNSUPPORTED", "wait_for.timeout_ms 必须是非负数字");
   }
   const limit = action.timeout_ms ?? timeoutMs;
+  if (action.human === true) {
+    await session.waitHumanDone(limit);
+    return "human signaled done";
+  }
   const where = ctx.frame ? `（第 ${ctx.frame.index} 个 iframe）` : "";
+  if (action.frame !== undefined) throw new DemoError("E_BAD_REQUEST", "wait_for human 不接受 frame 参数");
   if (action.selector) {
     const state = action.state ?? "visible";
     if (state !== "attached" && state !== "visible" && state !== "hidden") {
@@ -47,6 +52,9 @@ export const waitFor: ActionHandler<"wait_for"> = async (_session, ctx, action, 
       }),
     );
     return `selector ${state}: ${action.selector}`;
+  }
+  if (action.human !== undefined && typeof action.human !== "boolean") {
+    throw new DemoError("E_BAD_REQUEST", "wait_for.human 必须是布尔值");
   }
   if (action.text) {
     await waitUntil(

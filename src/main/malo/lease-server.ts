@@ -19,6 +19,7 @@ import {
   tokenMatches,
 } from "./http";
 import type { SessionManager } from "./session-manager";
+import { parsePermissions } from "./permissions";
 import { assertFailureResult, invokeMaloTool } from "./tools";
 
 export type LeaseServerOptions = {
@@ -54,6 +55,7 @@ function statusFor(error: unknown): number {
   if (isDemoError(error)) {
     if (error.code === "E_SESSION_NOT_FOUND") return 404;
     if (error.code === "E_PROFILE_LOCKED") return 409;
+    if (error.code === "E_PAUSED_BY_HUMAN" || error.code === "E_STOPPED_BY_HUMAN") return 409;
     if (error.code === "E_RESOURCE_LIMIT") return 429;
     if (error.code === "E_IMPORT_SOURCE_UNREACHABLE") return 502;
     if (error.code === "E_IMPORT_EMPTY") return 400;
@@ -167,12 +169,14 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
       if (body.popup !== undefined && body.popup !== "deny" && body.popup !== "adopt") {
         throw new BadRequest("popup 只能是 deny（拦下并回报目标地址）或 adopt（在当前页面打开）");
       }
+      const permissions = parsePermissions(body.permissions);
       const session = await options.manager.create({
         name: typeof body.name === "string" ? body.name : undefined,
         profile: body.profile,
         width,
         height,
         popup: body.popup,
+        permissions,
       });
       sendJson(res, 201, session);
       return;

@@ -107,6 +107,48 @@ app.whenReady().then(async () => {
     const keptTitle = await kept.view.webContents.executeJavaScript("document.title");
     if (keptTitle !== "kept") failures.push(`page state lost across re-host: title=${keptTitle}`);
     kept.close();
+
+    // 人给 agent 发信号：工具条上的 完成 / 暂停 / 继续 / 停止
+    const signals = [];
+    const humanStage = new StageWindow({
+      width: 640,
+      height: 480,
+      showMode: "hidden",
+      toolbar: true,
+      partition: "toolbar-smoke-human",
+      onHumanSignal: (signal) => signals.push(signal),
+    });
+    const humanBar = humanStage.ensureToolbar().view.webContents;
+    const bridged = await waitFor(async () =>
+      humanBar.executeJavaScript(
+        "typeof window.maloToolbar.done === 'function' && typeof window.maloToolbar.onHuman === 'function'",
+      ),
+    );
+    if (!bridged) failures.push("human signal bridge not exposed in toolbar");
+    const panel = (script) => humanBar.executeJavaScript(script);
+    await waitFor(() => panel("document.readyState === 'complete'"));
+    if ((await panel("document.getElementById('human-pause').textContent")) !== "暂停") {
+      failures.push("pause button is not labelled before any signal");
+    }
+    await panel(`(() => { for (const id of ["human-done", "human-pause", "human-stop"]) document.getElementById(id).click(); return true; })()`);
+    const signalled = await waitFor(() => signals.length >= 3);
+    if (!signalled || signals.slice(0, 3).join(",") !== "done,pause,stop") {
+      failures.push(`toolbar buttons sent ${JSON.stringify(signals)} instead of done,pause,stop`);
+    }
+    humanStage.setHumanState({ done: false, paused: true, stopped: false });
+    const pauseTurnedResume = await waitFor(async () => (await panel("document.getElementById('human-pause').textContent")) === "继续");
+    if (!pauseTurnedResume) failures.push("pause button did not turn into 继续 after the session reported paused");
+    if ((await panel("document.getElementById('human-state').textContent")) !== "已暂停") {
+      failures.push("toolbar does not show the paused state");
+    }
+    await panel(`document.getElementById("human-pause").click()`);
+    if (!(await waitFor(() => signals.includes("resume")))) failures.push("resume was not sent from the toolbar");
+    humanStage.setHumanState({ done: false, paused: false, stopped: true });
+    const locked = await waitFor(async () =>
+      (await panel("Array.from(document.querySelectorAll('button.signal')).map((b) => b.disabled).join()")) === "true,true,true",
+    );
+    if (!locked) failures.push("signal buttons stay clickable after the human stopped the session");
+    humanStage.close();
   } catch (error) {
     failures.push(error instanceof Error ? error.message : String(error));
   } finally {
@@ -122,7 +164,15 @@ app.whenReady().then(async () => {
   log(
     JSON.stringify({
       status: "passed",
-      checks: ["preload", "enter-navigate", "address-sync", "back", "page-viewport"],
+      checks: [
+        "preload",
+        "enter-navigate",
+        "address-sync",
+        "back",
+        "page-viewport",
+        "human-signals",
+        "rehost-after-human-close",
+      ],
       viewport: stage.view.getBounds(),
     }),
   );
