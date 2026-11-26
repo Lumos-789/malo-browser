@@ -2,15 +2,17 @@
 
 <h1 align="center">Malo Browser</h1>
 
-A browser for scripted demos. It is built on Electron + Chromium and splits a web demo
-into a Stage (what the audience sees) and a Recorder (fixed-spec capture) without
-forking the browser engine; demo flows are written as scene scripts, with a Director
-console and a loopback control API on top.
+An agent browser runtime built on Electron + Chromium: a background daemon hands out
+port leases so several agents can drive isolated browser sessions at the same time —
+structured snapshots (iframes included), physical input, persistent login profiles,
+human handoff windows and a pass/fail verdict on every step. The same repository carries
+the scripted web demo tool it grew out of: a Stage (what the audience sees) and a
+Recorder (fixed-spec capture) that split a web demo without forking the browser engine,
+with scene scripts, a Director console and a loopback control API on top.
 
-This repository is a working prototype (0.1.x): hidden recording, physical CDP input,
-an overlay, 1080p30 output, evidence files and a minimal `.app`. It is also the
-`malo-browser` agent runtime: a background daemon hands out port leases so several
-agents can drive isolated browser sessions at the same time.
+This is a working prototype (0.2.x): hidden recording, physical CDP input, an overlay,
+1080p30 output, evidence files, a minimal `.app`, and the
+[agent runtime](#malo-browser-agent-runtime).
 
 ## Install
 
@@ -39,7 +41,8 @@ npm run build
 
 `npm run build` compiles the main process with tsc and bundles the fixture and the
 director console with vite. `npm run typecheck` type-checks the main and renderer
-projects without emitting, and `npm test` runs the vitest unit suite.
+projects without emitting, `npm test` runs the vitest unit suite, and
+`npm run test:client` runs the offline tests of the Python client.
 
 ### Plugin packaging
 
@@ -110,8 +113,6 @@ writes it to `<out>/control.json` (0600). Routes and curl examples are in the
 
 ### Window and focus modes
 
-Measured in Phase 0:
-
 | Mode | Behaviour | Recordable | Interactive |
 |---|---|---|---|
 | `hidden` (default) | window is never shown | yes | yes with focus emulation |
@@ -133,48 +134,47 @@ not cover the screen and does not switch Spaces. Screenshots are produced only o
 explicit request or as failure evidence.
 
 ```bash
-npm run daemon
-# in another terminal
+npm run daemon            # or let clients/python/malo_client.py start it on demand
 curl -s http://127.0.0.1:7410/health
 cat ~/.malo-browser/broker.json
 ```
 
 Defaults: broker `127.0.0.1:7410`, lease port pool `7411-7499`, data directory
 `~/.malo-browser`. A successful start prints one JSON line and writes
-`~/.malo-browser/broker.json` (0600) with `{endpoint, token, pid}`. Only one daemon may
-use a data directory: a process-level single-instance lock makes extra processes exit
-before touching any storage, a healthy running instance makes the new process fail
-loudly, and a stale `broker.json` left by a stopped instance is overwritten. Every start
-first removes anonymous partitions left by the previous run and lease directories older
-than `--artifact-ttl-hours`.
+`~/.malo-browser/broker.json` (0600) with `{endpoint, token, pid, version, features}`.
+Only one daemon may use a data directory; it exits by itself after 30 minutes without
+leases or requests. Every start first removes what the previous run left behind:
+anonymous partitions, lease directories older than `--artifact-ttl-hours`, and the web
+caches of profiles idle for `--profile-cache-idle-hours`. Flags, leases, sessions and
+profiles: [docs/malo-browser.md](docs/malo-browser.md); the 27 session tools:
+[docs/malo-tools.md](docs/malo-tools.md).
 
-Daemon flags: `--daemon-port=7410`, `--port-min=7411`, `--port-max=7499`,
-`--lease-ttl-seconds=300`, `--session-idle-seconds=300`, `--max-sessions=16`,
-`--max-sessions-total=64`, `--artifact-ttl-hours=168`, `--data-dir=~/.malo-browser`.
+Parallel work is the normal case. A lease belongs to one client process: the Python client
+sends a per-process `holder` and renews the lease from a background thread, so processes
+that share an `agent_id` never release each other's sessions. A lease with a request still
+running does not expire, and a session with an operation in flight or a window shown to a
+human is never idle-reaped. Closing a session destroys its page at once; the daemon never
+exits because of an exception in one session.
 
-Parallel work is the normal case. A lease belongs to one client process: the Python
-client sends a per-process `holder`, and a lease is reused only by the same holder, so
-processes that share an `agent_id` never release each other's sessions. Processes that
-cold-start together spawn exactly one daemon. A lease with a request still running does
-not expire, and a session with an operation in flight or a window shown to a human is
-never idle-reaped.
-
-A new session needs both the lease token and its own session token; a session token from
-session A cannot read session B (401). `width` / `height` are the page viewport, and the
-handoff toolbar does not consume them. Sessions without a `profile` are anonymous and
-are wiped on close; sessions created with `{"profile":"work"}` share that profile's
-cookies and storage across sessions and daemon restarts. Profile names allow lowercase
-letters, digits, dot, underscore and hyphen (max 64 chars). Data lives under
-`<data-dir>/leases/<lease-id>/sessions/<session-id>/{downloads,artifacts}`, profile data
-under `<data-dir>/chromium`.
+A session needs both the lease token and its own session token; a session token from
+session A cannot read session B (401). `width` / `height` are the page viewport. Sessions
+without a `profile` are anonymous and are wiped on close; sessions created with
+`{"profile":"work"}` share that profile's cookies and storage across sessions and daemon
+restarts. Two more creation options: `popup` (`deny`, the default, reports the target of a
+blocked `window.open` back to the agent; `adopt` opens it in the same page) and
+`permissions` (an allowlist of page permissions; everything else stays denied).
 
 `delivery-video` is only a visual-output adapter; it does not define the malo-browser
 kernel boundary.
 
 ### Verification scripts
 
-- `npm run smoke:malo -- ~/.malo-browser/broker.json http://127.0.0.1:4788` runs the
-  real daemon chain (see also [docs/malo-browser.md](docs/malo-browser.md)).
+- `npm test` runs the vitest unit suite and `npm run test:client` the offline tests of the
+  Python client.
+- `npm run smoke:malo` starts a throwaway daemon in a temporary data directory, runs the
+  real chain against it and stops it (fixture server needed:
+  `python3 -m http.server 4788 --bind 127.0.0.1 --directory out/fixture`). A broker.json
+  path as the first argument uses a daemon that is already running instead.
 - `npm run smoke:toolbar` builds and drives the handoff toolbar in a hidden window.
 - `npm run smoke:control -- report-review` talks to an already running control API; set
   `DEMO_CONTROL_URL` (default `http://127.0.0.1:7317`) and `DEMO_CONTROL_TOKEN` from
@@ -350,24 +350,27 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/snapshot \
 ```
 
 Tools: `navigate`, `history`, `events`, `observe`, `snapshot`, `extract`, `click`,
-`fill`, `upload_file`, `press`, `hover`, `select`, `focus`, `scroll`, `scroll_into_view`, `wait_for`,
-`sleep`, `assert`, `run_steps`, `network_capture`, `responses`, `watch`, `login`,
-`profiles`, `close`. `snapshot` returns body text, title, links, buttons, inputs, forms,
-tables, landmarks, iframes, dialogs and selectors for interactive elements; `extract`
-does targeted reads. `network_capture` subscribes this session to XHR/fetch response
-bodies for matching URL prefixes and `responses` returns them by seq, in daemon memory
-only. `run_steps` runs a list of those tools in order (stop at the first failure by
-default), writes a run report to the session's `artifacts/run-<timestamp>.json`, and
-returns `{ ok, step_count, failed_step, steps, report_path }`; `run_steps`, `watch`,
-`login`, `profiles` and `close` cannot be nested inside `run_steps`; `network_capture` and
-`responses` are session controls and are rejected there too, so captured bodies never
-reach a run report.
+`fill`, `type`, `press`, `hover`, `drag`, `select`, `focus`, `scroll`, `scroll_into_view`,
+`upload_file`, `wait_for`, `sleep`, `assert`, `run_steps`, `network_capture`, `responses`,
+`watch`, `login`, `profiles`, `close`. `snapshot` returns the visible text, headings, links,
+buttons, inputs, forms, tables, landmarks, role-based widgets, dialogs and interactive
+elements with selectors and center coordinates; `sections` narrows it to the lists you
+need. `frames` lists every visible iframe with an index and a box and, within
+`frame_depth` / `max_frames`, its content as a nested snapshot — same-origin,
+cross-origin and nested alike. `click`, `fill`, `extract`, `assert` and the other page
+tools take `frame: <index>` to act inside one. `type` sends text one key event at a time
+for editors and autocomplete boxes; `fill` replaces a value and reads it back. `run_steps`
+runs a list of tools in order, writes a run report to the session's `artifacts/`, and
+returns `{ ok, step_count, failed_step, steps, report_path }`. `network_capture` and
+`responses` read XHR/fetch response bodies in daemon memory only.
 
 Status mapping on the lease endpoint: bad arguments, unknown tools, selector-not-found
 and navigation policy violations → 400; unknown session → 404; locked profile → 409;
 session cap → 429; navigation failure → 502; step timeout → 504; real server failures →
-500. A navigation failure carries `details.navigation` (`http_status`, `net_error`,
-`net_error_description`, `settle`).
+500. Verdicts are not HTTP errors: a failed `assert` or `run_steps` is 200 with
+`result.ok: false`, and after the human clicks 暂停 (pause) or 停止 (stop) in the session
+window, page-changing tools answer 409 with `E_PAUSED_BY_HUMAN` / `E_STOPPED_BY_HUMAN`.
+The full contract is in [docs/malo-tools.md](docs/malo-tools.md).
 
 ### Profile login import
 
@@ -379,29 +382,33 @@ state to a malo profile without re-typing credentials:
 curl -X POST http://127.0.0.1:7411/v1/profiles/work/import \
   -H "x-malo-lease-token: $LEASE_TOKEN" \
   -H "content-type: application/json" \
-  -d '{"cdp_url":"http://127.0.0.1:9223"}'
+  -d '{"cdp_url":"http://127.0.0.1:9223","domains":["example.com"]}'
 ```
 
-Body: `cdp_url` (required, loopback `http://` only), `domains` (optional allowlist, e.g.
+Body: `cdp_url` (required, loopback `http://` only), `domains` (required allowlist, e.g.
 `["example.com","example.org"]` — a cookie matches when its domain equals, is a subdomain of,
-or is a parent of an entry), and `session_cookie_ttl_days` (default 180; session cookies
-are re-stamped as persistent so the imported login survives daemon restarts; `0` keeps
-them session-only). The daemon connects to the source's browser-level WebSocket and calls
-`Storage.getCookies`, writes each cookie through the Electron cookie store of the target
-profile's partition, and returns
+or is a parent of an entry; without it the import would copy every login in the source
+browser, so it is never assumed), and `session_cookie_ttl_days` (default 180; session
+cookies are re-stamped as persistent so the imported login survives daemon restarts; `0`
+keeps them session-only). The daemon connects to the source's browser-level WebSocket and
+calls `Storage.getCookies`, writes each cookie through the Electron cookie store of the
+target profile's partition, and returns
 `{ profile, created, source, cookies_total, cookies_matched, cookies_written, cookies_failed, failed }`
 (`failed` lists up to 20 per-cookie write errors, e.g. `__Host-` cookies that fail
-Chromium's prefix rules; `cookies_failed` counts that capped list, not all failures). Importing merges into whatever the profile already has; it
-never clears existing state, and cookies whose login has expired on the server side still
-need a real re-login. Source unreachable → 502 `E_IMPORT_SOURCE_UNREACHABLE`; zero
-cookies matched → 400 `E_IMPORT_EMPTY`. Only cookies move; localStorage, IndexedDB and
-HTTP cache stay in the source browser.
+Chromium's prefix rules; `cookies_failed` counts that capped list, not all failures).
+Importing merges into whatever the profile already has; it never clears existing state,
+and cookies whose login has expired on the server side still need a real re-login. Source
+unreachable → 502 `E_IMPORT_SOURCE_UNREACHABLE`; zero cookies matched → 400
+`E_IMPORT_EMPTY`. Only cookies move; localStorage, IndexedDB and HTTP cache stay in the
+source browser.
 
 Security boundary: loopback only, `Host` must be `127.0.0.1:<port>` or
 `localhost:<port>` (DNS-rebinding guard), JSON only with a 1MB body cap, broker / lease /
-session tokens are three separate layers, navigation is `http:`/`https:` only with
-URL-embedded credentials rejected, and `window.open` plus permission requests are denied
-by default. The old `x-pagehand-*` token headers are still accepted; new scripts use
+session tokens are three separate layers, and navigation is `http:`/`https:` only with
+URL-embedded credentials rejected. `window.open` never opens a new window: it is blocked
+and its target reported to the agent, or opened in the same page for a session created
+with `popup: "adopt"`. Page permissions are denied unless the session lists them in
+`permissions`. The old `x-pagehand-*` token headers are still accepted; new scripts use
 `x-malo-*`.
 
 ### assert and run_steps verdicts
@@ -422,11 +429,7 @@ A failed assertion is a business verdict, not a broken service. `assert` answers
     "error": {
       "code": "E_ASSERTION_FAILED",
       "message": "E_ASSERTION_FAILED: 断言失败：visible expected true, got false",
-      "details": {
-        "checks": [{ "kind": "visible", "expected": true, "actual": false, "ok": false }],
-        "waited_ms": 5001,
-        "screenshotPath": "<artifacts>/failure-<ms>.png"
-      }
+      "details": { "checks": [/* same checks */], "waited_ms": 5001, "screenshotPath": "<artifacts>/failure-<ms>.png" }
     }
   }
 }
@@ -436,29 +439,28 @@ On success `result.ok` and `result.passed` are `true`, and `result.checks` holds
 check. So for both `assert` and `run_steps`, read `result.ok` for the verdict:
 `run_steps` also answers 200 when the batch ran, with `result.ok: false` plus
 `failed_step` and `steps[].error`. Invalid arguments stay 4xx and genuine server
-failures stay 5xx.
-
-Contract change in 0.1.2: an `assert` failure used to be HTTP 500 with
-`{"ok":false,"error":{"code":"E_ASSERTION_FAILED",...}}`. Callers that treated the 500
-status as "assertion failed" must now read HTTP 200 plus `result.ok`. This is a 0.1.x
-contract change, hence the explicit note.
+failures stay 5xx. Since 0.1.2 a failed `assert` is this 200 verdict; it used to be HTTP
+500.
 
 ### Human handoff
 
 Logins, QR codes and human checks should not be brute-forced by an agent. `watch` and
 `login` make "human takes over once, agent gets control back" a contract: the window
-appears with `showInactive` by default (no keyboard focus, no Space switch), has a native
-title bar and a browser toolbar (back, forward, reload, address bar that accepts only
-http/https, Enter to navigate, address synced from the page). `focus: true` is the only
-way to bring it to the front. Credentials live only in that call's memory: never written
-to disk, events or responses; password fields read `[redacted]` and `assert value` on a
-password input is rejected instead of compared. A successful `login`
-hides the handoff window again (unless `keep_visible: true`), and the agent keeps the
-same session; `watch` stays visible until it is hidden explicitly, and a timed-out
-handoff window is not closed automatically. Closing the window by hand does not end the
-session either: the page is re-hosted in a hidden window and the next `watch` brings it
-back with its state intact. The window is centred once and then stays where the human
-moved it. The login state survives only with a `profile`.
+appears with `showInactive` by default (no keyboard focus, no Space switch) and has a
+native title bar and a browser toolbar — back, forward, reload and an address bar that
+accepts only http/https — with three buttons on its right: 完成 (Done), 暂停 / 继续
+(Pause / Resume) and 停止 (Stop). Done is what `wait_for {"human":true}` and a watch-mode
+`login` wait for. Pause and stop make every page-changing tool answer 409 until the human
+resumes or the agent closes the session, while observation tools keep working. `focus:
+true` is refused unless the daemon was started with `--allow-focus`; a human who wants
+the window in front clicks it or its Dock icon. Credentials live only in that call's
+memory: never written to disk, events or responses; password fields read `[redacted]`
+and `assert value` on a password input is rejected instead of compared. A successful
+`login` hides the handoff window again (unless `keep_visible: true`) and the agent keeps
+the same session; `watch` stays visible until it is hidden explicitly. Closing the window
+by hand does not end the session: the page is re-hosted in a hidden window and the next
+`watch` brings it back intact, centred once and then left where the human moved it. The
+login state survives only with a `profile`.
 
 ## Project layout
 
@@ -475,7 +477,7 @@ src/main/
   demo-protocol.ts    # demo:// scene protocol (registered per session)
   electron-page-driver.ts  # PageDriver on Electron (CDP physical events)
   electron-overlay.ts      # OverlayPort: cursor/highlight/spotlight/annotate/mask/blackout
-  malo/               # malo-browser daemon: port pool, leases, broker, sessions, HTTP
+  malo/               # malo-browser daemon: leases, sessions, tools, frames, HTTP
   scenes/             # Zod validation, scene loading, interpolation, script hash
   runner/             # state machine, 19 actions, target resolution
   capture/            # screencast frames, 30fps timeline, ffmpeg, evidence
@@ -493,6 +495,8 @@ scripts/
   toolbar-smoke.mjs  # handoff toolbar (hidden StageWindow)
   malo-web-probe.mjs # site compatibility probe (captures + screenshots)
   compare.cjs        # SSIM comparison between two videos
+tests/unit/           # vitest: daemon, leases, sessions, tools, window and toolbar wiring
+tests/python/         # offline tests for the Python client
 ```
 
 ## Troubleshooting
@@ -529,9 +533,17 @@ scripts/
   service; read `result.error.details.checks` and the failure screenshot.
 - malo session 401 -> send both the lease token and the session token; a session token
   from another session is rejected. 404 after a long idle period -> the session was
-  reaped, create a new one.
+  reaped; 404 right after its page was closed through the CDP debug port -> the session
+  ended with its page. Either way, create a new one.
 - Daemon refuses to start -> another daemon owns that data directory; stop it or pass a
   different `--data-dir`.
+- `watch` / `login` returns 400 naming `--allow-focus` -> `focus: true` needs a daemon
+  started with that flag; otherwise the window is shown without taking focus.
+- 409 `E_PAUSED_BY_HUMAN` / `E_STOPPED_BY_HUMAN` -> the human clicked pause or stop in the
+  session window; wait for resume, or finish up and close the session.
+- The client refuses to start because the running daemon is older than the repo while
+  other agents still hold leases -> wait for them or stop it yourself; the error names
+  the agents and the pid.
 
 ## Side effects
 
@@ -542,18 +554,21 @@ scripts/
 - Starts ffmpeg/ffprobe child processes while encoding and self-checking; capture itself
   costs CPU while the take runs.
 - Binds loopback ports only: control API `7317`, broker `7410`, lease pool `7411-7499`
-  (all configurable). No listener on external interfaces.
+  (all configurable). No listener on external interfaces — except the Chromium CDP debug
+  port when the daemon is started with `--remote-debugging-port`, which has no
+  authentication.
 - Opens windows depending on mode: none by default in record / autorun / headless;
   a visible, unfocused stage with `npm start`; the handoff window for `watch`/`login`.
   Non-interactive macOS modes switch to the accessory activation policy and hide the
   Dock icon; while any human-visible window is on screen the Dock icon is shown so a
   buried window can be raised from the Dock, and it disappears again once none is left.
-- The malo daemon keeps running until stopped, writes `~/.malo-browser` (broker.json
-  0600, Chromium profile data, per-session downloads/artifacts), and deletes anonymous
-  session partitions when those sessions close.
-- Login state persists only for named `profile` sessions, until
-  `DELETE /v1/profiles/:name`.
-- Permissions and `window.open` are denied. Downloads are allowed, but only into the
+- The malo daemon keeps running until stopped or idle for 30 minutes, writes
+  `~/.malo-browser` (broker.json 0600, Chromium profile data, per-session
+  downloads/artifacts and an `events.jsonl` audit log), and removes anonymous session
+  partitions and idle profile web caches at startup.
+- Login state persists only for named `profile` sessions, until `DELETE /v1/profiles/:name`.
+- Page permissions and `window.open` are denied unless a session opts in through
+  `permissions` and `popup`. Downloads are allowed, but only into the
   session's own `downloads/` directory (sanitized filename); the demo stage additionally
   refuses downloads unless the scene policy allows them.
 
@@ -561,21 +576,28 @@ scripts/
 
 - Verified on macOS only; other platforms are untested.
 - Recording caps at 1920x1080 and a 30fps timeline; evidence self-checks enforce that.
-- Not a general-purpose browser: no tabs, bookmarks or multi-tab UI; the handoff window
-  only has an address bar plus back/forward/reload.
+- Not a general-purpose browser: one page per session, no tabs, bookmarks or multi-tab
+  UI; the handoff window only has an address bar plus back/forward/reload and the three
+  handoff buttons.
 - Loopback only: no remote access, no multi-user service, no approval flow or remote
-  deployment.
+  deployment. Profiles are shared by name across every agent on the machine.
+- The CDP debug port, when enabled, is unauthenticated: it exposes every session and
+  profile of that daemon to local processes.
 - Hidden mode needs focus emulation; with `--focus-emulation=false` physical clicks are
-  dropped.
-- The agent runtime runs one daemon per data directory, defaults to 4 sessions per lease
-  and reaps idle sessions after 300 seconds; it never streams video continuously.
-- Login handling is auto-detection plus selector overrides, not a per-site adapter
-  layer.
-- Sites can block automated or headless browsers at the network / challenge layer; see
-  [docs/malo-web-compat.md](docs/malo-web-compat.md). `network_capture` covers the page
-  target only: OOPIF (cross-process iframe) and Service Worker requests are not captured.
+  dropped. Hidden pages run without background throttling because headless recording
+  depends on it, so a hidden session costs about as much as a foreground one.
+- The agent runtime runs one daemon per data directory, defaults to 16 sessions per
+  lease and 64 in total, and reaps idle sessions after 300 seconds; it never streams
+  video continuously.
+- `network_capture` covers the page target only: requests from cross-process iframes and
+  Service Workers are not captured. File upload inside a cross-origin iframe is refused.
+- Login handling is auto-detection plus selector overrides, not a per-site adapter layer.
+  Sites can block automated browsers at the network / challenge layer; see
+  [docs/malo-web-compat.md](docs/malo-web-compat.md).
 - 0.1.x contract change: `assert` failures are HTTP 200 with `result.ok: false`, not
-  HTTP 500. Callers that keyed on 500 must be updated.
+  HTTP 500. 0.2.0 contract changes: `snapshot`'s `interactive[].rect` x/y is the element
+  center (it used to be the top-left corner), login import requires `domains`, and
+  `focus: true` needs `--allow-focus`.
 
 ## License
 

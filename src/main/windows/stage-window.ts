@@ -43,6 +43,7 @@ export class StageWindow {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        // 无头录制与离屏交互要靠它：隐藏页面的定时器、动画、rAF 必须照前台速度跑
         backgroundThrottling: false,
         partition: options.partition ?? "persist:demo-stage",
       },

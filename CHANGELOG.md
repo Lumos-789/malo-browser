@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.2.0
+
+一次完整 review 后的修复与补齐：运行时的稳定性、边界与 agent 工具层。含三处契约变更，见末尾。
+
+会话生命周期
+
+- **会话关闭时页面真的被销毁。**此前只关窗口，页面视图连同渲染进程一直活到 daemon 退出
+  （实测 0 会话时仍挂着 4 个渲染进程约 460MB）。匿名会话的磁盘数据因此也能在关闭时清掉。
+- **页面在会话之外被销毁时会话自行收尾。**典型是经 CDP 调试口关掉页面目标：此前关会话的流程
+  会在中途抛错、走不到关窗口，窗口成僵尸，daemon 退出时给已死页面换宿主抛未捕获异常（2026-11-26
+  日志里的致命错误）。现在记一条 `page.destroyed`、归还名额，之后访问它得到带原因的 404。
+- **daemon 不再因为某个会话里的未捕获异常整体退出。**异常连同完整栈记进日志，其余 agent 的会话
+  不受影响；录制、跑场景这些一次性进程照旧出错即退出。
+- **窗口显示给人的会话所属租约到期宽限。**此前「窗口显示给人看就不回收」只在会话层，租约层
+  5 分钟没请求就连同人正在用的窗口一起收走。新增 `--visible-grace-seconds`（默认 1800，0 = 不宽限）。
+- Python 客户端默认起后台线程续租（按 TTL 的三分之一），`release()` 时停；心跳失败后的调用带原因
+  报「租约已失效」。
+
+边界
+
+- **CDP 调试口。**启动时醒目告警（它没有鉴权：本机任何进程连上都能操作这个 daemon 的全部会话与
+  已登录档案），`/health` 暴露 `debug_port`；客户端的 `open_session` 不再默认要求调试口，必须显式传。
+  这条通道保持可用但不再是无感默认。
+- **登录态导入 `domains` 必填。**不填等于把源浏览器里所有站点的登录态整包搬进来，不再是默认值。
+- **`focus: true` 默认拒绝。**daemon 以 `--allow-focus` 启动才接受；窗口默认只以不抢焦点的方式出现。
+- **登录态档案。**上限 64 → 256（本机已用 43）；启动时清掉闲置 profile 的网页缓存
+  （`--profile-cache-idle-hours`，默认 72；实测数据目录 3.3G 里 95% 是缓存）；可选按天数过期删除
+  （`--profile-ttl-days`，默认关）；`profiles` 新增 `prune`（默认只预览，`apply=true` 才删）；
+  登记文件损坏时明确报错；profile 的互斥锁与「创建中」登记改为全 daemon 一份，跨租约并发
+  清理 / 创建同名档案不再竞态；清理时分区目录删不干净报 `E_PROFILE_CLEAR_FAILED` 且保留登记。
+- **会话级权限白名单。**创建会话时给 `permissions` 逐项放开 11 项页面权限（剪贴板、全屏、定位、
+  通知、摄像头麦克风等），其余默认拒绝；能打开外部应用、读写文件系统、抓屏、碰硬件的权限不可放开。
+
+Agent 工具
+
+- **iframe 内容可见可操作。**`snapshot.frames` 列出所有看得见的 iframe（带序号与位置）并在层数、
+  数量上限内返回嵌套内容——同源、跨域（独立进程）、多层嵌套都读得到。`click` / `fill` / `hover` /
+  `select` / `focus` / `scroll` / `scroll_into_view` / `wait_for` / `upload_file` / `extract` / `assert`
+  新增 `frame` 与 `frame_url`，在指定 iframe 里操作，坐标自动换算到顶层视口。同源 iframe 里可以
+  上传文件，跨域的明确拒绝。
+- **人工交接按钮。**watch 窗口的工具条新增「完成 / 暂停 / 停止」：完成由 `wait_for {"human":true}`
+  或 watch 模式的 `login` 取走；暂停、停止期间动页面的工具返回 409（`E_PAUSED_BY_HUMAN` /
+  `E_STOPPED_BY_HUMAN`），观察类不受影响。会话摘要带 `human` 状态。
+- **按键。**命名键（回车、Tab、方向键、F1–F12 等）补齐虚拟键码，只认 keyCode 的页面收得到；
+  可打印键带 Shift 语义；修饰键位掩码的含义写进工具说明。新增 `type`：逐字符发按键事件。
+- **滚轮。**落点从视口左上角 (10,10) 改为视口中心（后台页面左侧的固定导航栏不再被误滚），可用
+  x / y 指定落点；返回前等滚动位置稳定。
+- **`snapshot`。**新增 `widgets` 分区（tab、option、menuitem、switch 等靠 role 表达语义的组件）与
+  `sections` 参数（只采集点名的分区）；`interactive[].rect` 的 x/y 改为中心点，另给 `left` / `top`。
+- **弹窗。**`window.open` 仍不开新窗口，但目标地址记进事件并随触发它的动作结果返回
+  （`popup.url` / `popup.adopted`）；创建会话时给 `popup=adopt` 可让弹窗地址在当前页面打开。
+- **事件留档。**会话事件同时追加到 `artifacts/events.jsonl`（写满 5 MiB 后只补一条截停标记），
+  创建会话的响应带 `events_log`；`events` 分页返回 `next_after` 游标与 `dropped` 断档数。
+- `history` 动作改用 `navigationHistory`（原接口已弃用）。
+
+客户端与工程
+
+- Python 客户端：`session.call` 按工具在 daemon 侧的最长等待推算超时（此前固定 120 秒，人机登录
+  一定客户端先超时），读超时不再混进「连不上」；日志走 stderr；`daemon_args` / `MALO_DAEMON_ARGS`
+  在冷启动时追加 daemon 参数；本仓比运行中的 daemon 新且它没有租约时自动重启让新代码生效。
+  新增离线用例 `npm run test:client`。
+- `malo-smoke` 默认自起临时数据目录的隔离 daemon，跑完即停；不再碰正式的 `~/.malo-browser`。
+  新增实验页与 iframe 页，覆盖上述全部行为。
+- 会话核心 `browser-session.ts` 从 1833 行拆到 526 行：导航、观察、快照、提取、断言、登录、动作
+  各自成模块。
+- daemon 日志的租约行带 agent 名；技能说明与两份插件清单改为 agent 运行时打头；工具参考拆成
+  `docs/malo-tools.md`。
+
+契约变更
+
+- `snapshot` 的 `interactive[].rect`：`x` / `y` 由左上角改为元素**中心**（与 `extract mode=rect`
+  一致）；左上角改用 `left` / `top`。
+- `POST /v1/profiles/:name/import` 的 `domains` 由可选改为必填。
+- `watch` / `login` 的 `focus: true` 默认被拒绝（400），需要 daemon 以 `--allow-focus` 启动。
+
+验证：399 单元测试、19 条客户端离线用例、typecheck、隔离 daemon 真浏览器 smoke、工具条 smoke 全绿。
+
 ## 0.1.18
 
 - **租约按持有者隔离。**`POST /v1/leases` 新增可选 `holder`（1-128 字符）：带了它的

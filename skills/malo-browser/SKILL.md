@@ -1,17 +1,20 @@
 ---
 name: malo-browser
-description: Install, configure and run Malo Browser (Chinese name 马喽浏览器), a scripted browser demo and agent web-execution tool (Electron stage, hidden 1080p30 recording with evidence files, director console, loopback control API, multi-agent daemon with isolated sessions). Use when the user says "malo-browser", "马喽浏览器", "马喽", "演示浏览器", "网页演示录制", "场景演示", or asks to set up, run or troubleshoot the Malo Browser project.
+description: Install, configure, run and drive Malo Browser (Chinese name 马喽浏览器), an agent browser runtime and scripted web demo tool on Electron. The runtime is a background daemon that hands out isolated, profile-backed browser sessions which agents drive over loopback HTTP with 27 session tools (snapshot with iframe content, click/fill/type, assert, login handoff windows, network capture); the demo tool records hidden 1080p30 videos with evidence files. Use when the user says "malo-browser", "马喽浏览器", "马喽", "malo", "agent 浏览器", "演示浏览器", "网页演示录制", "场景演示", or asks to set up, run, drive or troubleshoot Malo Browser.
 metadata:
-  short-description: Install and run the scripted browser demo tool; troubleshoot it
+  short-description: Install and run the Malo agent browser runtime and demo tool; drive and troubleshoot it
 ---
 
-# Malo Browser — install / configure / troubleshoot
+# Malo Browser — install / configure / drive / troubleshoot
 
-Scripted browser demo tool on Electron: scene scripts drive a Chromium stage,
-recording is fixed-spec 1920x1080@30fps with mp4 plus evidence files, and a
-React director console and loopback HTTP control API sit on top. This skill is
-an install/config/troubleshooting shell — it does NOT replicate product logic;
-it gets the real GitHub repo running on the user's machine.
+Malo Browser is an agent browser runtime: a long-lived daemon gives every agent an isolated
+browser session on a private loopback port, and agents drive pages with 27 HTTP tools. The
+same repo carries a scripted web demo tool (Stage + Recorder, scene scripts, Director
+console, loopback control API). This skill is an install/config/drive/troubleshooting shell —
+it does not replicate product logic; it gets the real GitHub repo running and tells an agent
+how to use the runtime correctly. The full contract lives in the repo:
+`docs/malo-browser.md` (daemon, leases, sessions, profiles, limits) and `docs/malo-tools.md`
+(every tool).
 
 ## Prerequisites
 
@@ -19,7 +22,7 @@ it gets the real GitHub repo running on the user's machine.
   `^22.12.0 || ^24.0.0 || >=26.0.0`; the 23 and 25 lines are excluded)
 - ffmpeg + ffprobe on PATH (missing → exit code 3)
 - macOS (window modes and recording are verified on macOS; hidden mode uses the accessory activation policy)
-- Python 3 (only for the bundled fixture static server)
+- Python 3 (the bundled fixture static server, and the optional Python client)
 - git
 
 ## Install (from the GitHub repo)
@@ -31,116 +34,113 @@ npm install
 npm run build
 ```
 
-Sanity gate: `npm run typecheck && npm test` — both green before anything else.
+Sanity gate: `npm run typecheck && npm test && npm run test:client` — all green before
+anything else.
 
-## Run
+## Agent runtime (the main use)
 
-1. Serve the fixture page (default demo target):
+The daemon creates no visible window, does not take focus and does not switch Spaces. Start
+it explicitly with `npm run daemon`, or let `clients/python/malo_client.py` start it on
+demand (it also renews leases from a background thread and restarts an idle daemon that is
+older than the repo). Broker state is written to `~/.malo-browser/broker.json` (0600).
 
-   ```bash
-   python3 -m http.server 4788 --bind 127.0.0.1 --directory out/fixture
-   ```
+```python
+from malo_client import acquire_lease
 
+with acquire_lease("my-agent") as lease:            # heartbeat starts with the lease
+    with lease.new_session("work", profile="work") as s:   # profile = persistent login state
+        s.call("navigate", {"url": "https://example.com"})
+        snap = s.call("snapshot", {"sections": ["text", "buttons", "inputs"]})
+        s.call("click", {"text": "Sign in"})
+        s.call("fill", {"selector": "#email", "text": "user@example.com"})
+        s.call("assert", {"url": "/dashboard", "timeout_ms": 10000})
+```
+
+Without the client: `POST /v1/leases` on the broker (`x-malo-broker-token`, body
+`{"agent_id","holder"}`), then `POST /v1/sessions` on the lease endpoint, then
+`POST /v1/sessions/:id/tools/<tool>` with both `x-malo-lease-token` and
+`x-malo-session-token`. `GET /v1/tools` lists every tool with its JSON Schema.
+
+How to drive a page well:
+
+- Read with `snapshot` (pass `sections` to get only the lists you need) and `extract` for
+  targeted reads. `interactive[].rect` and `extract mode=rect` give the element center as
+  `x`/`y`, ready for `click` / `drag`. Role-based widgets (tabs, options, switches) are in
+  `widgets`.
+- `frames` lists every visible iframe with an index; its `content` is a nested snapshot.
+  Pass `frame: <index>` to `click`, `fill`, `extract`, `assert` and the other page tools to
+  act inside one — same-origin, cross-origin and nested iframes all work. If the index is
+  stale the call fails and lists the frames that do exist.
+- `fill` replaces a value and reads it back; a swallowed input fails with `E_FILL_NOT_LANDED`
+  instead of a false success. Use `type` for editors and autocomplete boxes that listen for
+  key events. `press` takes a character or a named key; `modifiers` is a bitmask
+  (Alt=1, Ctrl=2, Meta=4, Shift=8).
+- `scroll` lands at the viewport center (pass `x`/`y` to aim at an inner scroll container)
+  and returns once the position has settled.
+- `assert` returns HTTP 200 with the verdict on `result.ok`; read `result.checks` for
+  expected/actual. `run_steps` batches tools and writes a report.
+- `window.open` never opens a new window: the blocked target comes back as
+  `result.popup.url`; create the session with `"popup": "adopt"` to open such targets in
+  the same page.
+
+Login walls and human checks — do not brute-force them:
+
+- `watch {"show": true}` shows the real page in an inactive window (no focus steal) with a
+  toolbar: address bar, back/forward/reload, and three buttons for the human.
+- Hand a task to the human with `wait_for {"human": true}`: it returns when they click
+  完成 (Done). `login` in `watch` mode does the same for logins (`reason: human_done`).
+- 暂停 (Pause) and 停止 (Stop) make every page-changing tool answer 409
+  (`E_PAUSED_BY_HUMAN` / `E_STOPPED_BY_HUMAN`); observation tools keep working. Wait for
+  the human, or close the session.
+- `login` in `password` mode fills one-shot credentials (kept in memory only) or waits for
+  the handoff. `focus: true` is refused unless the daemon runs with `--allow-focus`.
+
+Persistent login state: create a session with `{"profile":"work"}` to keep cookies and
+storage across sessions and daemon restarts; without it the session closes anonymous.
+`profiles` lists, clears and previews stale profiles (`action: prune` is a dry run until
+`apply: true`). Seeding a profile from a logged-in Chromium (`POST /v1/profiles/:name/import`)
+requires an explicit `domains` list. Profiles are shared by name across every agent on the
+machine.
+
+Every session also writes `artifacts/events.jsonl` (path returned as `events_log`); poll
+`events` with `next_after` and check `dropped`.
+
+Rules that keep the machine usable: never try to bring a window to the front; close sessions
+and release leases when done; do not start the shared daemon with
+`--remote-debugging-port` — that port has no authentication and exposes every session and
+profile in the daemon. Playwright-style direct CDP work belongs in its own daemon
+(`--data-dir`), started explicitly.
+
+## Demo tool
+
+1. Serve the fixture page: `python3 -m http.server 4788 --bind 127.0.0.1 --directory out/fixture`
 2. Hidden 10s recording (no window, no focus steal, no Dock icon):
-
-   ```bash
-   npx electron . --mode=record --seconds=10 --out=evidence --label=hidden
-   ```
-
-   Produces `evidence/hidden.mp4` + `hidden.evidence.json` (+ overlay check
-   frame). Exit 0 only when self-checks pass: duration ±0.5s, 30fps,
-   1920x1080, black-frame ratio <50%, overlay really captured.
-
+   `npx electron . --mode=record --seconds=10 --out=evidence --label=hidden` →
+   `evidence/hidden.mp4` + `hidden.evidence.json`; exit 0 only when self-checks pass.
 3. Visible stage for manual browsing: `npx electron . --mode=stage`
-4. Director console + control API: `npm run start:control` — the API binds
-   127.0.0.1 only; a random token is written to `<out>/control.json` (0600);
-   curl examples are in the repository README (`App control API` section).
-5. Full scripted scene run:
-   `npx electron . --mode=app --autorun=report-review --scenes=fixtures/scenes`
+4. Director console + control API: `npm run start:control` (loopback only; token in
+   `<out>/control.json`, 0600)
+5. Full scripted scene: `npx electron . --mode=app --autorun=report-review --scenes=fixtures/scenes`
 
-## malo-browser agent runtime
-
-`npm run daemon` starts the background malo-browser broker: one daemon hands out
-loopback port leases to multiple agents, and each lease can host isolated
-browser sessions with separate cookies, downloads and artifacts. It creates no
-visible window and does not take focus. Broker state is written to
-`~/.malo-browser/broker.json` (0600); routes, lease rules and the smoke script are
-documented in `docs/malo-browser.md`.
-
-Parallel work: a lease belongs to one client process. `clients/python/malo_client.py`
-sends a per-process `holder`, so processes that share an `agent_id` get separate
-leases and never release each other's sessions (the same process reuses its lease;
-hand-written calls without `holder` still reuse by `agent_id`). Several processes
-cold-starting at once spawn one daemon. A lease with a request still running does not
-expire, and a session with an operation in flight or a window shown to a human is never
-idle-reaped.
-
-Agents discover page tools with `GET /v1/tools` and invoke them through
-`POST /v1/sessions/:id/tools/<tool>`. Use `snapshot` for structured page content
-(text, headings, links, buttons, inputs, forms, tables, frames, dialogs and
-interactive selectors), `extract` for targeted reads (mode `rect` returns element
-boxes with `x/y` as the center — feed those straight into click/drag coordinates),
-and the action tools for click/fill/drag/upload_file/press/hover/select/focus/
-scroll/history. `click` also accepts `text` (substring match, innermost visible
-element wins, `nth` picks among multiple) for controls with no usable selector —
-a bare `<span>编辑作品</span>` included. `fill` verifies the value landed: if the
-page swallows synthetic input (React-controlled fields can), JS-focus and
-native-setter fallbacks run, and a still-missing value fails with
-`E_FILL_NOT_LANDED` instead of a false success; `verify:false` opts out for pages
-that rewrite input. `drag` presses, moves in interpolated steps and releases —
-for sliders, crop boxes and other pointer-sequence components. `assert` checks
-visible/hidden/text/value/url/count with retry and returns per-check
-expected/actual plus a failure screenshot; a failed assertion is HTTP 200 with
-`result.ok: false` (not a 5xx), and `run_steps` reports its verdict the same way,
-so agent-driven runs end in a pass/fail verdict instead of a vague observation.
-`run_steps` runs a batch of those tools back to back and writes a per-step run
-report.
-
-Response bodies from the network layer: `network_capture` subscribes the session to
-XHR/fetch responses matching URL prefixes, `responses` returns bodies by `seq` (daemon
-memory only). Order: subscribe, navigate, interact, then poll — requests sent before the
-subscription are missed. Scope: the CDP session attaches to the page target, so OOPIF
-(cross-process iframe) and Service Worker requests are never captured.
-
-Login walls and human checks: `watch` shows the real page in an inactive window
-(no focus steal; it stays visible until it is hidden explicitly, i.e. another
-`watch` call with `show:false`) with a native title bar and a browser toolbar
-(address bar plus back/forward/reload), and `login` either fills one-shot
-credentials or waits for the human handoff — a successful `login` hides the
-handoff window again unless `keep_visible: true`. Closing the window by hand does
-not end the session: the page is re-hosted in a hidden window and the next `watch`
-brings it back with its state intact. Credentials stay in memory and
-are never written to events or responses.
-
-Persistent login state: create a session with `{"profile":"work"}` to keep
-cookies and storage across sessions and daemon restarts; omit it and the session
-closes anonymous. Inspect or clear profiles with `GET /v1/profiles` and
-`DELETE /v1/profiles/:name` (409 while sessions still use it). Seed a profile from
-an already-logged-in Chromium with `POST /v1/profiles/:name/import` (lease token)
-passing `{"cdp_url":"http://127.0.0.1:<port>"}` (loopback only) plus optional
-`domains` filter — it pulls cookies live over the source's DevTools endpoint and
-writes them into the profile's partition, so logins move over without re-typing
-credentials. Chromium data for the daemon lives under `<data-dir>/chromium`.
+Scenes are YAML under `fixtures/scenes/`; the contract is `schemas/scene.schema.json`.
+Account login keeps profiles in a 0600 file outside git (default
+`~/.config/malo-browser/accounts.json`, override `MALO_BROWSER_ACCOUNTS`); a scene only names
+`account_id`, the password comes from the profile's `password_env`. Details:
+`docs/accounts.md`.
 
 ## Configure
 
-- Common flags: `--url --width --height --out --label --keep-frames
+- Daemon: `--daemon-port=7410 --port-min=7411 --port-max=7499 --lease-ttl-seconds=300
+  --session-idle-seconds=300 --max-sessions=16 --max-sessions-total=64
+  --artifact-ttl-hours=168 --visible-grace-seconds=1800 --profile-cache-idle-hours=72
+  --profile-ttl-days=0 --idle-exit-seconds=1800 --allow-focus --proxy-server --data-dir`.
+  The Python client passes extra flags at cold start via `daemon_args=` or `MALO_DAEMON_ARGS`.
+- Demo: `--url --width --height --out --label --keep-frames
   --window-mode=hidden|inactive|offscreen|ghost|focused --focus-emulation=false
-  --control-api=true --control-port --headless=true`
-- Scenes: YAML under `fixtures/scenes/` (bundled: `report-review`, plus
-  `multi-a` → `multi-b` for multi-scene switching, and `login-demo` for account
-  login); the field contract is
-  `schemas/scene.schema.json`; step target resolution order is
-  `data_demo_id` → `selector` → `text` → `x/y` coordinates.
-- Account login: keep profiles in a `0600` file outside git (default
-  `~/.config/malo-browser/accounts.json`, override with
-  `MALO_BROWSER_ACCOUNTS`). A scene uses only `account_id`; the password comes
-  from the profile's `password_env`. `origin` and `login_url` must be
-  same-origin, and the profile must define `success_selector` or `success_url`.
-  Full contract:
-  https://github.com/Lumos-789/malo-browser/blob/main/docs/accounts.md
-- Hidden window mode needs focus emulation (on by default) — without it CDP
-  physical clicks are dropped.
+  --control-api=true --control-port --headless=true`. Hidden window mode needs focus
+  emulation (on by default) — without it CDP physical clicks are dropped.
+
+A misspelled flag fails fast; `--help` prints the full reference.
 
 ## Exit codes
 
@@ -153,45 +153,31 @@ credentials. Chromium data for the daemon lives under `<data-dir>/chromium`.
 
 ## Troubleshoot
 
-- `EBADENGINE` warning/failure → wrong Node line; use a range from `engines`
-  (>=22.12 on the 22 line, 24.x, or >=26; not 23/25).
-- Exit 0 with no stdout and no files in `<out>` → `ELECTRON_RUN_AS_NODE` is set
-  in that shell (`echo $ELECTRON_RUN_AS_NODE`), so Electron ran as plain Node and
-  never started the app; re-run with `env -u ELECTRON_RUN_AS_NODE npx electron ...`.
-- Exit 3 `E_FFMPEG_MISSING` → install ffmpeg (e.g. `brew install ffmpeg`), re-run.
-- Exit 4 / recording failed → read the take's `.evidence.json`; failure still
-  leaves evidence (`status: "failed"`, `video: null`, `error.code`). In app mode
-  this includes the zero-frame `E_RECORDER_NO_FRAMES` case, which used to only log
-  a line — look next to the take: `recordings/<timestamp>_<scene>/take-01.evidence.json`.
-- `assert` returned HTTP 200 with `result.ok: false` → the check ran and the page
-  did not match; read `result.error.details.checks` (expected/actual) and the
-  failure screenshot. Only bad arguments (4xx) or server failures (5xx) are HTTP
-  errors.
-- `EADDRINUSE` → port occupied; stderr prints a self-help pointer. For the demo
-  control API pass `--control-port`, for the daemon pass `--daemon-port`, and for
-  a lease exhaust change `--port-min` / `--port-max`.
-- daemon exits at once with `已有 daemon 在使用数据目录` → another daemon already owns
-  that data directory: reuse it (the Python client does) or pass another `--data-dir`.
-- `E_RESOURCE_LIMIT` (429) naming `--max-sessions-total` → the daemon-wide session cap
-  is full; close sessions or raise the flag. Naming the lease cap → same, per lease.
-- Control API 401 → read the token from `<out>/control.json`; send it as
-  `Authorization: Bearer <token>` or `x-demo-token: <token>`.
-- Director shows a MOCK marker → preload bridge missing; launch via
-  `npm start` / `npm run start:control`, not by opening HTML directly.
-- `E_SELECTOR_NOT_FOUND` → no visible element matched; check target syntax
-  (`fill`'s `text` is the input content — the target needs
-  `selector`/`data_demo_id`/`target_text`, or x/y coordinates). A selector with
-  invalid syntax is a different error: `E_BAD_REQUEST` (400), not a timeout.
-- `E_NAV_BLOCKED` on a `goto` step → the scene's `allow` list does not contain
-  that origin; tool-initiated navigation is checked like page navigation.
-- `${env:NAME}` only reads `SCENE_`-prefixed variables; other names are refused
-  so a third-party scene cannot exfiltrate process secrets.
-- `E_ACCOUNT_NOT_FOUND` → account file or `account_id` missing; check
-  `MALO_BROWSER_ACCOUNTS` and the available ids in the error.
-- `E_ACCOUNT_INVALID` with `0600` or `outside a git worktree` → move the
-  profile outside the repo and run `chmod 600 <accounts.json>`.
-- `E_ACCOUNT_INVALID` with `environment variable` → export the profile's
-  `password_env` in the shell that launches Electron. Never put the password
-  in scene YAML.
-- A window steals focus during recording → a focusing `--window-mode` was
-  passed; the defaults (`hidden`/`inactive`) never take focus.
+- `EBADENGINE` → wrong Node line; use a range from `engines`.
+- Exit 0 with no stdout and no files in `<out>` → `ELECTRON_RUN_AS_NODE` is set; re-run with
+  `env -u ELECTRON_RUN_AS_NODE npx electron ...`.
+- Exit 3 / 4 → install ffmpeg, or read the take's `.evidence.json` (`status: "failed"`,
+  `error.code`).
+- `EADDRINUSE` → `--control-port` (control API), `--daemon-port` (broker), `--port-min` /
+  `--port-max` (lease pool).
+- daemon exits at once with `已有 daemon 在使用数据目录` → reuse it, or pass another `--data-dir`.
+- Client says the running daemon is older than the repo but still has leases → wait for the
+  other agents, or stop the daemon yourself (the error names them and the pid).
+- `E_RESOURCE_LIMIT` (429) → the session cap named in the message is full; close sessions or
+  raise the flag.
+- `E_PAUSED_BY_HUMAN` / `E_STOPPED_BY_HUMAN` (409) → the human paused or stopped the session
+  from its window; wait for resume or close the session.
+- `E_SELECTOR_NOT_FOUND` mentioning an iframe → the `frame` index is stale; snapshot again.
+- `assert` is HTTP 200 with `result.ok: false` → the verdict; read `result.checks` and the
+  failure screenshot.
+- 404 right after a page was closed over the CDP debug port → the session ended with its page.
+- `${env:NAME}` in scenes only reads `SCENE_`-prefixed variables (third-party scenes cannot
+  read process secrets); `E_ACCOUNT_*` → check `MALO_BROWSER_ACCOUNTS` and the `password_env`.
+
+## Verify changes
+
+```bash
+python3 -m http.server 4788 --bind 127.0.0.1 --directory out/fixture   # in another terminal
+npm run smoke:malo        # starts an isolated throwaway daemon, runs the full chain, stops it
+npm run smoke:toolbar     # handoff toolbar and its human-signal buttons, hidden window
+```

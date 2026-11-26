@@ -2,13 +2,14 @@
 
 <h1 align="center">Malo Browser</h1>
 
-演示用浏览器。基于 Electron + Chromium，把网页演示拆成
-Stage（给观众看）和 Recorder（固定规格录制），不 fork 浏览器内核；
+基于 Electron + Chromium 的 agent 浏览器运行时：常驻 daemon 分发端口租约，多个 agent
+可以并行驱动相互隔离的浏览 session——结构化快照（含 iframe）、物理输入、可复用的登录态、
+人工接管窗口，每一步都有明确的成败结论。同一个仓库也承载它脱胎而来的脚本化网页演示工具：
+把网页演示拆成 Stage（给观众看）和 Recorder（固定规格录制），不 fork 浏览器内核，
 演示流程用场景脚本编排，配 Director 控制台与本地控制 API。
 
-当前仓库是 0.1.x 的可工作原型：无头录制、CDP 物理交互、覆盖层、1080p30 出片、
-证据文件、最小 `.app`。它同时是 `malo-browser` agent 运行时：常驻 daemon 分发端口租约，
-多个 agent 可以并行驱动相互隔离的浏览 session。
+当前仓库是 0.2.x 的可工作原型：无头录制、CDP 物理交互、覆盖层、1080p30 出片、
+证据文件、最小 `.app`，以及[agent 运行时](#malo-browseragent-运行时)。
 
 ## 安装
 
@@ -35,7 +36,8 @@ npm run build
 ```
 
 `npm run build` 用 tsc 编译主进程、用 vite 打包 fixture 与 director 控制台。
-`npm run typecheck` 只做类型检查、不产物；`npm test` 跑 vitest 单元测试。
+`npm run typecheck` 只做类型检查、不产物；`npm test` 跑 vitest 单元测试；
+`npm run test:client` 跑 Python 客户端的离线用例。
 
 ### 插件形态
 
@@ -122,42 +124,39 @@ agent 拿一个稳定端口，同一端口下可以开多个相互隔离的 sess
 不抢焦点、不抢屏、不切 Space；截图只在显式请求或动作失败取证时生成。
 
 ```bash
-npm run daemon
-# in another terminal
+npm run daemon            # 或者由 clients/python/malo_client.py 按需拉起
 curl -s http://127.0.0.1:7410/health
 cat ~/.malo-browser/broker.json
 ```
 
 默认：broker `127.0.0.1:7410`，lease 端口池 `7411-7499`，数据目录 `~/.malo-browser`。
 启动成功会打印一行 JSON，并写入 `~/.malo-browser/broker.json`（0600），内容为
-`{endpoint, token, pid}`。同一个数据目录只允许一个 daemon：进程级单实例锁让多出来的进程
-在碰任何存储之前就退出，已有实例仍健康时新进程会明确报错；已停止实例留下的
-`broker.json` 会被识别为陈旧文件并覆盖。每次启动先清掉上次运行遗留的匿名分区，以及超过
-`--artifact-ttl-hours` 的租约目录。
+`{endpoint, token, pid, version, features}`。同一个数据目录只允许一个 daemon；连续 30 分钟
+没有租约也没有请求时它会自己退出。每次启动先清掉上次运行的遗留：匿名分区、超过
+`--artifact-ttl-hours` 的租约目录，以及闲置超过 `--profile-cache-idle-hours` 的 profile 的
+网页缓存。参数、租约、会话与档案见 [docs/malo-browser.md](docs/malo-browser.md)，
+27 个 session 工具见 [docs/malo-tools.md](docs/malo-tools.md)。
 
-daemon 参数：`--daemon-port=7410`、`--port-min=7411`、`--port-max=7499`、
-`--lease-ttl-seconds=300`、`--session-idle-seconds=300`、`--max-sessions=16`、
-`--max-sessions-total=64`、`--artifact-ttl-hours=168`、`--data-dir=~/.malo-browser`。
-
-并行是常态。租约归一个客户端进程所有：Python 客户端自动带进程级 `holder`，租约只被同一个
-holder 复用，所以共用同一个 `agent_id` 的多个进程不会互相放掉对方的会话。多个进程同时
-冷启动只会拉起一个 daemon。还有请求在处理中的租约不会到期；有操作正在进行、或窗口正显示
-给人看的 session 不会被空闲回收。
+并行是常态。租约归一个客户端进程所有：Python 客户端自动带进程级 `holder`，并在后台线程里
+续租，所以共用同一个 `agent_id` 的多个进程不会互相放掉对方的会话。还有请求在处理中的租约
+不会到期；有操作正在进行、或窗口正显示给人看的 session 不会被空闲回收。会话关闭时页面
+随之销毁；某个会话里的异常不会让整个 daemon 退出。
 
 新 session 需要同时带 lease token 和自己的 session token；拿 session A 的 token 访问
-session B 会返回 401。`width` / `height` 是页面视口尺寸，人工接管窗口的工具条不占用
-这两个值。不带 `profile` 的 session 是匿名的，关闭即清空；创建时带
-`{"profile":"work"}` 的 session 共享该 profile 的 cookies 与 storage，跨 session、
-跨 daemon 重启保留。profile 名只接受小写字母、数字、点、下划线、短横线，最长 64 字符。
-数据落在 `<data-dir>/leases/<lease-id>/sessions/<session-id>/{downloads,artifacts}`，
-profile 数据落在 `<data-dir>/chromium`。
+session B 会返回 401。`width` / `height` 是页面视口尺寸。不带 `profile` 的 session 是匿名的，
+关闭即清空；创建时带 `{"profile":"work"}` 的 session 共享该 profile 的 cookies 与 storage，
+跨 session、跨 daemon 重启保留。创建时另有两个可选项：`popup`（默认 `deny`，拦下
+`window.open` 并把目标地址回报给 agent；`adopt` 在当前页面打开）与 `permissions`
+（放开哪些页面权限；没点名的保持拒绝）。
 
 `delivery-video` 只是视觉输出适配器，不决定 malo-browser 的内核边界。
 
 ### 验证脚本
 
-- `npm run smoke:malo -- ~/.malo-browser/broker.json http://127.0.0.1:4788` 跑真实 daemon
-  链路（详见 [docs/malo-browser.md](docs/malo-browser.md)）。
+- `npm test` 跑 vitest 单元测试，`npm run test:client` 跑 Python 客户端的离线用例。
+- `npm run smoke:malo` 在临时数据目录里起一个用完即弃的 daemon，对着它跑真实链路后停掉
+  （需要先起 fixture 静态服务：`python3 -m http.server 4788 --bind 127.0.0.1 --directory out/fixture`）。
+  第一个参数给 broker.json 路径时改为连已经在跑的 daemon。
 - `npm run smoke:toolbar` 先 build，再在隐藏窗口里驱动人工接管工具条。
 - `npm run smoke:control -- report-review` 连已经在跑的控制 API；需要设
   `DEMO_CONTROL_URL`（默认 `http://127.0.0.1:7317`）与 `DEMO_CONTROL_TOKEN`
@@ -320,27 +319,32 @@ curl -X POST http://127.0.0.1:7411/v1/sessions/$SESSION_ID/tools/snapshot \
   -d '{"max_chars":8000,"max_items":120}'
 ```
 
-工具：`navigate`、`history`、`events`、`observe`、`snapshot`、`extract`、`click`、
-`fill`、`upload_file`、`press`、`hover`、`select`、`focus`、`scroll`、`scroll_into_view`、`wait_for`、
-`sleep`、`assert`、`run_steps`、`network_capture`、`responses`、`watch`、`login`、
-`profiles`、`close`。`snapshot` 返回正文、标题、链接、按钮、输入框、表单、表格、
-landmark、iframe、dialog 和可交互元素的 selector；`extract` 做定向读取。
-`network_capture` 为当前 session 订阅命中 URL 前缀的 XHR/fetch 响应体，`responses`
-按 seq 取回，body 只留在 daemon 内存。`run_steps` 顺序执行一串工具（默认遇错即停），
-把 run report 写进 session 的 `artifacts/run-<timestamp>.json`，返回
-`{ ok, step_count, failed_step, steps, report_path }`；`run_steps`、`watch`、`login`、
-`profiles` 与 `close` 自身不能再嵌进 `run_steps`；`network_capture`、`responses` 属于 session
-控制，同样会被拒绝，捕获到的 body 不会进入 run report。
+工具：`navigate`、`history`、`events`、`observe`、`snapshot`、`extract`、`click`、`fill`、
+`type`、`press`、`hover`、`drag`、`select`、`focus`、`scroll`、`scroll_into_view`、
+`upload_file`、`wait_for`、`sleep`、`assert`、`run_steps`、`network_capture`、`responses`、
+`watch`、`login`、`profiles`、`close`。`snapshot` 返回正文、标题、链接、按钮、输入框、表单、
+表格、landmark、role 组件、dialog，以及带选择器和中心坐标的可交互元素；`sections` 可以只要
+点名的分区。`frames` 列出所有看得见的 iframe（带序号和位置），并在 `frame_depth` /
+`max_frames` 之内把每个 iframe 的内容作为嵌套 snapshot 返回——同源、跨域、多层嵌套都一样。
+`click`、`fill`、`extract`、`assert` 等页面工具用 `frame: <序号>` 在指定 iframe 里操作。
+`type` 逐个按键事件输入文本，给编辑器、联想框用；`fill` 整段替换并回读校验。`run_steps`
+顺序执行一串工具，把 run report 写进 session 的 `artifacts/`，返回
+`{ ok, step_count, failed_step, steps, report_path }`。`network_capture` 与 `responses`
+读取 XHR/fetch 响应体，只留在 daemon 内存。
 
 lease endpoint 状态码：参数错误、未知工具、选择器找不到、导航策略拒绝 → 400；session
 不存在 → 404；profile 被占用 → 409；session 超上限 → 429；导航失败 → 502；步骤超时 →
-504；服务内部异常 → 500。导航失败会在 `details.navigation` 中带 `http_status`、
-`net_error`、`net_error_description` 和 `settle` 信息。
+504；服务内部异常 → 500。判决不是 HTTP 错误：`assert` 没通过、`run_steps` 有失败步骤都是
+200 加 `result.ok: false`；人在窗口里点了「暂停」或「停止」之后，动页面的工具返回 409，
+`error.code` 是 `E_PAUSED_BY_HUMAN` 或 `E_STOPPED_BY_HUMAN`。完整契约见
+[docs/malo-tools.md](docs/malo-tools.md)。
 
 安全边界：只监听回环地址；`Host` 只接受 `127.0.0.1:<port>` 与 `localhost:<port>`（防
 DNS rebinding）；只接受 JSON、请求体上限 1MB；broker / lease / session token 三层分离；
-只允许 `http:` / `https:` 导航，拒绝 URL 内嵌 credentials；`window.open` 与权限请求默认
-拒绝。旧版 `x-pagehand-*` token 头仍被接受，新脚本请用 `x-malo-*`。
+只允许 `http:` / `https:` 导航，拒绝 URL 内嵌 credentials。`window.open` 不开新窗口：
+拦下并把目标地址回报给 agent，或对以 `popup: "adopt"` 创建的 session 在当前页面打开。
+页面权限默认拒绝，session 用 `permissions` 点名的才放开。旧版 `x-pagehand-*` token 头
+仍被接受，新脚本请用 `x-malo-*`。
 
 ### Profile 登录态导入
 
@@ -352,11 +356,12 @@ profile：
 curl -X POST http://127.0.0.1:7411/v1/profiles/work/import \
   -H "x-malo-lease-token: $LEASE_TOKEN" \
   -H "content-type: application/json" \
-  -d '{"cdp_url":"http://127.0.0.1:9223"}'
+  -d '{"cdp_url":"http://127.0.0.1:9223","domains":["example.com"]}'
 ```
 
-请求体：`cdp_url`（必填，只允许回环 `http://`）、`domains`（可选白名单，如
-`["example.com","example.org"]`——cookie 的域与条目相等、是其子域或父域即算匹配）、
+请求体：`cdp_url`（必填，只允许回环 `http://`）、`domains`（**必填**的域白名单，如
+`["example.com","example.org"]`——cookie 的域与条目相等、是其子域或父域即算匹配；不限定范围
+就等于把源浏览器里所有站点的登录态整包搬进来，所以它不是可省略的默认值）、
 `session_cookie_ttl_days`（默认 180；session cookie 会被改写成持久 cookie，让导入的
 登录态活过 daemon 重启；`0` 表示保持 session-only）。daemon 连上源浏览器的
 browser-level WebSocket 调 `Storage.getCookies`，把每条 cookie 经目标 profile 分区的
@@ -398,23 +403,21 @@ localStorage、IndexedDB 与 HTTP cache 都留在源浏览器。
 通过时 `result.ok` 与 `result.passed` 为 `true`，`result.checks` 带全部检查项。所以
 `assert` 与 `run_steps` 都统一读 `result.ok` 拿判决：`run_steps` 在批次跑完时同样是
 200，`result.ok: false` 配 `failed_step` 与 `steps[].error`。非法参数仍是 4xx，真正的
-服务内部异常仍是 5xx。
-
-0.1.2 契约变更：`assert` 失败原先是 HTTP 500 加
-`{"ok":false,"error":{"code":"E_ASSERTION_FAILED",...}}`。把 500 状态当成「断言失败」的
-调用方必须改成读 HTTP 200 加 `result.ok`。这是 0.1.x 的契约变更，因此明确写出。
+服务内部异常仍是 5xx。自 0.1.2 起 `assert` 失败就是这个 200 判决，不再是 HTTP 500。
 
 ### 人工接管
 
 登录、扫码和人机校验不该让 agent 硬碰。`watch` 与 `login` 把「人接手一次、agent 拿回
 控制权」做成契约：窗口默认以 `showInactive` 出现（不抢键盘焦点、不切 Space），带原生
-标题栏和一条浏览器工具条（后退、前进、刷新，地址栏只接受 http/https，回车跳转，地址随
-页面同步）。只有显式 `focus: true` 才把窗口带到前台。凭据只存在于本次调用内存：不落盘、
-不进事件、不回显；密码框固定读 `[redacted]`，且对密码框做 `assert value` 会被拒绝而不是
-拿脱敏串比较。`login` 成功后窗口自动隐藏（`keep_visible:
-true` 可留给人继续操作），agent 继续用同一个 session；`watch` 打开的窗口要显式关闭才
-隐藏，超时的人工接管窗口也不会自动关闭。人手动关掉窗口同样不结束会话：页面换一个隐藏窗口
-接着托管，下次 `watch` 原样弹回来。窗口只在第一次显示时居中，之后人拖到哪就在哪。
+标题栏和一条浏览器工具条——后退、前进、刷新，以及只接受 http/https 的地址栏——右侧还有
+三个按钮：完成、暂停 / 继续、停止。「完成」是 `wait_for {"human":true}` 与 watch 模式
+`login` 等的信号；「暂停」和「停止」会让所有动页面的工具返回 409，直到人点「继续」或 agent
+收尾关闭会话，观察类工具不受影响。`focus: true` 被拒绝（400），除非 daemon 以
+`--allow-focus` 启动；想看前台时人自己点窗口或 Dock 图标。凭据只存在于本次调用内存：不落盘、
+不进事件、不回显；密码框固定读 `[redacted]`，对密码框做 `assert value` 会被拒绝而不是拿脱敏
+串比较。`login` 成功后窗口自动隐藏（`keep_visible: true` 可留给人继续操作），agent 继续用
+同一个 session；`watch` 打开的窗口要显式收起才隐藏。人手动关掉窗口不结束会话：页面换一个
+隐藏窗口接着托管，下次 `watch` 原样弹回；窗口只在第一次显示时居中，之后人拖到哪就在哪。
 登录态只有指定 `profile` 时才保留。
 
 ## 项目结构
@@ -432,7 +435,7 @@ src/main/
   demo-protocol.ts    # demo:// 场景协议（按 session 注册）
   electron-page-driver.ts  # PageDriver 的 Electron 实现（CDP 物理事件）
   electron-overlay.ts      # OverlayPort：光标/高亮/聚光/标注/遮罩/黑屏
-  malo/               # malo-browser daemon：端口池、租约、broker、session、HTTP
+  malo/               # malo-browser daemon：租约、session、工具、iframe、HTTP
   scenes/             # Zod 校验、Scene 加载、变量插值、脚本 hash
   runner/             # 状态机、19 个动作、目标解析
   capture/            # screencast 抓帧、30fps 时间轴、ffmpeg、evidence
@@ -450,6 +453,8 @@ scripts/
   toolbar-smoke.mjs  # 人工接管工具条（隐藏 StageWindow）
   malo-web-probe.mjs # 站点兼容性探针（抓帧 + 截图）
   compare.cjs        # 两段视频的 SSIM 对比
+tests/unit/           # vitest：daemon、租约、session、工具、窗口与工具条
+tests/python/         # Python 客户端的离线用例
 ```
 
 ## 排障
@@ -483,8 +488,15 @@ scripts/
 - `assert` 返回 HTTP 200 且 `result.ok: false` → 这是判决而不是服务坏了；读
   `result.error.details.checks` 和失败截图。
 - malo session 401 → 必须同时带 lease token 与 session token；用别的 session 的 token
-  会被拒绝。长时间空闲后 404 → session 已被回收，新建一个。
+  会被拒绝。长时间空闲后 404 → session 已被回收；经调试口关掉页面后立刻 404 → session 随
+  页面结束了。两种情况都新建一个。
 - daemon 起不来 → 另一个 daemon 占着这个数据目录；停掉它，或换 `--data-dir`。
+- `watch` / `login` 返回 400 并提到 `--allow-focus` → `focus: true` 需要 daemon 带这个参数
+  启动；否则窗口只以不抢焦点的方式出现。
+- 409 `E_PAUSED_BY_HUMAN` / `E_STOPPED_BY_HUMAN` → 人在窗口里点了暂停或停止；等恢复，或收尾并
+  关闭会话。
+- 客户端提示运行中的 daemon 比本仓旧、且还有别的 agent 占着租约，拒绝重启 → 等它们结束，或自己停掉
+  daemon；报错里列了占用的 agent 与 pid。
 
 ## 副作用
 
@@ -493,34 +505,40 @@ scripts/
   API 时还有 `control.json`（0600）。
 - 编码与自检时启动 ffmpeg/ffprobe 子进程；录制期间采帧本身也占 CPU。
 - 只绑回环端口：控制 API `7317`、broker `7410`、lease 端口池 `7411-7499`（都可改）。
-  不在外部网卡上监听。
+  不在外部网卡上监听——唯一例外是 daemon 带 `--remote-debugging-port` 启动时的 CDP 调试口，
+  它没有鉴权。
 - 按模式决定是否开窗：record / autorun / headless 默认不开；`npm start` 开一个可见但
   不抢焦点的 Stage；`watch`/`login` 开人工接管窗口。macOS 非交互模式切到 accessory
   激活策略并隐藏 Dock 图标；有可见窗口期间 Dock 会亮出图标（被挡住的窗口点 Dock
   即可调回最前），窗口全部收起后图标自动消失。
-- malo daemon 会一直运行到被停止，写 `~/.malo-browser`（broker.json 0600、Chromium
-  profile 数据、每 session 的 downloads/artifacts），匿名 session 关闭时删除自己的
-  partition。
+- malo daemon 一直运行到被停止或空闲 30 分钟，写 `~/.malo-browser`（broker.json 0600、
+  Chromium profile 数据、每 session 的 downloads/artifacts，以及 `events.jsonl` 事件留档），
+  启动时清掉匿名 session 的 partition 与闲置 profile 的网页缓存。
 - 登录态只在指定 `profile` 的 session 上保留，直到 `DELETE /v1/profiles/:name`。
-- 权限与 `window.open` 默认拒绝。下载允许，但只能落进当前 session 自己的 `downloads/`
-  目录（文件名已消毒）；演示端（Stage）另按场景策略决定是否放行下载。
+- 页面权限与 `window.open` 默认拒绝，session 通过 `permissions` 与 `popup` 点名才放开。
+  下载允许，但只能落进当前 session 自己的 `downloads/` 目录（文件名已消毒）；演示端
+  （Stage）另按场景策略决定是否放行下载。
 
 ## 限制
 
 - 只在 macOS 上验证过；其他平台未测。
 - 录制上限 1920x1080、30fps 时间轴，evidence 自检按这个规格校验。
-- 不是通用浏览器：没有标签页、书签或多标签 UI；人工接管窗口只有地址栏加
-  后退/前进/刷新。
-- 只做回环：不支持远程访问、多用户服务化，也没有审批流或远程部署。
-- 隐藏模式依赖焦点仿真；`--focus-emulation=false` 时物理点击会被丢弃。
-- agent 运行时一个数据目录只跑一个 daemon，每 lease 默认 16 个 session、整个 daemon
-  默认 64 个，空闲 300 秒回收（有操作正在进行或窗口显示给人看的除外）；不做连续视频推流。
-- 登录处理是自动识别加 selector 覆盖，不是按站点配置的适配层。
-- 站点可能在网络层 / 人机校验层拦自动化或无头浏览器，见
-  [docs/malo-web-compat.md](docs/malo-web-compat.md)。`network_capture` 只覆盖页面
-  target：OOPIF（跨进程 iframe）与 Service Worker 发出的请求抓不到。
-- 0.1.x 契约变更：`assert` 失败是 HTTP 200 加 `result.ok: false`，不再是 HTTP 500；
-  按 500 判断的调用方必须改。
+- 不是通用浏览器：一个 session 一个页面，没有标签页、书签或多标签 UI；人工接管窗口只有
+  地址栏加后退/前进/刷新和三个交接按钮。
+- 只做回环：不支持远程访问、多用户服务化，也没有审批流或远程部署。档案按名字在整机所有
+  agent 之间共享。
+- CDP 调试口开启时没有鉴权：本机任何进程都能操作该 daemon 的全部会话与档案。
+- 隐藏模式依赖焦点仿真；`--focus-emulation=false` 时物理点击会被丢弃。隐藏页面不做后台
+  节流（无头录制依赖它），所以隐藏会话的开销和前台会话差不多。
+- agent 运行时一个数据目录只跑一个 daemon，每 lease 默认 16 个 session、整个 daemon 默认
+  64 个，空闲 300 秒回收；不做连续视频推流。
+- `network_capture` 只覆盖页面 target：跨进程 iframe 与 Service Worker 发出的请求抓不到。
+  跨域 iframe 里不能上传文件。
+- 登录处理是自动识别加 selector 覆盖，不是按站点配置的适配层。站点可能在网络层 / 人机校验层
+  拦自动化浏览器，见 [docs/malo-web-compat.md](docs/malo-web-compat.md)。
+- 0.1.x 契约变更：`assert` 失败是 HTTP 200 加 `result.ok: false`，不再是 HTTP 500。
+  0.2.0 契约变更：`snapshot` 的 `interactive[].rect` 的 x/y 改为元素中心（原先是左上角），
+  登录态导入必须给 `domains`，`focus: true` 需要 `--allow-focus`。
 
 ## 许可
 

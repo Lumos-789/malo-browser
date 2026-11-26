@@ -1,17 +1,19 @@
 {
   "name": "malo-browser",
   "productName": "Malo Browser",
-  "version": "0.1.18",
+  "version": "0.2.0",
   "private": true,
-  "description": "Scripted browser demo tool with 1080p30 evidence recording, plus malo-browser: a background agent browser runtime with port leases and isolated sessions",
+  "description": "Agent browser runtime (a daemon handing out port leases with isolated, profile-backed sessions that agents drive through 27 session tools) and a scripted web demo tool with hidden 1080p30 recording and evidence files",
   "license": "MIT",
   "keywords": [
     "dsh-plugin",
+    "agent-browser",
+    "browser-automation",
     "electron",
-    "demo",
-    "recording",
     "browser",
-    "agent"
+    "agent",
+    "demo",
+    "recording"
   ],
   "type": "module",
   "main": "index.js",
