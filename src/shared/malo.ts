@@ -157,6 +157,21 @@ export type MaloObservation = MaloLightObservation & {
   };
 };
 
+export type MaloSnapshotFrame = {
+  /** snapshot.frames 的下标，动作的 frame 参数用它指定这个 iframe。 */
+  index: number;
+  /** 父框架的下标；null = 直接挂在顶层页面上。 */
+  parent: number | null;
+  url: string;
+  name: string;
+  /** iframe 的内容框在顶层视口里的位置与大小。 */
+  rect: { left: number; top: number; width: number; height: number };
+  /** 这个 iframe 里的页面内容（在深度与数量上限内才有）。 */
+  content?: MaloSnapshot;
+  /** 内容读不出来时的原因，不影响其余部分。 */
+  content_error?: string;
+};
+
 export type MaloSnapshot = {
   url: string;
   title: string;
@@ -200,7 +215,11 @@ export type MaloSnapshot = {
     checked: boolean;
     expanded: boolean;
   }>;
-  frames: Array<{ url: string; name: string; title: string }>;
+  frames: MaloSnapshotFrame[];
+  /** iframe 列表读不出来时的原因（页面正在变化）。 */
+  frames_error?: string;
+  /** 有 iframe 因为超出 max_frames 没读到内容。 */
+  frames_truncated?: boolean;
   dialogs: Array<{ text: string; selector: string }>;
   messages: Array<{ text: string; selector: string }>;
   truncated: Record<string, boolean>;
@@ -209,6 +228,8 @@ export type MaloSnapshot = {
 export type MaloExtractResult = {
   selector: string;
   mode: "text" | "html" | "attributes" | "rect";
+  /** 结果来自哪个 iframe（顶层页面时没有这个字段）。 */
+  frame?: number;
   count: number;
   matches: Array<{
     selector: string;
@@ -231,7 +252,7 @@ export type MaloWatchResult = {
   window: "shown" | "hidden";
 };
 
-export type MaloAssertInput = {
+export type MaloAssertInput = FrameTarget & {
   visible?: string;
   hidden?: string;
   text?: string;
@@ -320,7 +341,14 @@ export type MaloLoginResult = {
   observation: MaloLightObservation;
 };
 
-export type MaloClickAction = {
+/** frame = snapshot.frames 的下标：在这个 iframe 里操作；不给就是顶层页面。 */
+export type FrameTarget = {
+  frame?: number;
+  /** 保险：该 iframe 的 URL 必须包含这个片段，否则说明页面变了、序号对不上。 */
+  frame_url?: string;
+};
+
+export type MaloClickAction = FrameTarget & {
   type: "click";
   selector?: string;
   /** 按可见文本定位（子串匹配、取最内层可见元素）；与 selector 同给时 selector 是搜索范围 */
@@ -333,7 +361,7 @@ export type MaloClickAction = {
   click_count?: number;
 };
 
-export type MaloFillAction = {
+export type MaloFillAction = FrameTarget & {
   type: "fill";
   selector: string;
   text: string;
@@ -364,7 +392,7 @@ export type MaloPressAction = {
   modifiers?: number;
 };
 
-export type MaloScrollAction = {
+export type MaloScrollAction = FrameTarget & {
   type: "scroll";
   dx?: number;
   dy?: number;
@@ -380,21 +408,21 @@ export type MaloTypeAction = {
   delay_ms?: number;
 };
 
-export type MaloHoverAction = {
+export type MaloHoverAction = FrameTarget & {
   type: "hover";
   selector?: string;
   x?: number;
   y?: number;
 };
 
-export type MaloSelectAction = {
+export type MaloSelectAction = FrameTarget & {
   type: "select";
   selector: string;
   value?: string;
   label?: string;
 };
 
-export type MaloFocusAction = {
+export type MaloFocusAction = FrameTarget & {
   type: "focus";
   selector: string;
 };
@@ -404,12 +432,12 @@ export type MaloHistoryAction = {
   action: "back" | "forward" | "reload";
 };
 
-export type MaloScrollIntoViewAction = {
+export type MaloScrollIntoViewAction = FrameTarget & {
   type: "scroll_into_view";
   selector: string;
 };
 
-export type MaloWaitAction = {
+export type MaloWaitAction = FrameTarget & {
   type: "wait_for";
   selector?: string;
   text?: string;

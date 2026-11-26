@@ -1,6 +1,11 @@
 import { DemoError, isDemoError } from "../../shared/errors";
 import { MALO_TOOL_NAMES } from "../../shared/malo-tools";
-import { isSnapshotSection, type SnapshotSection } from "./snapshot";
+import {
+  SNAPSHOT_LIMITS,
+  isSnapshotSection,
+  type SnapshotInput,
+  type SnapshotSection,
+} from "./snapshot";
 import type {
   MaloAction,
   MaloActionResult,
@@ -26,7 +31,7 @@ import type {
 export type MaloToolSession = {
   navigate(url: string, timeoutMs?: number, settleMs?: number): Promise<MaloLightObservation>;
   observe(mode: "light" | "screenshot", maxChars?: number, clipSelector?: string): Promise<MaloObservation>;
-  snapshot(maxChars?: number, maxItems?: number, sections?: SnapshotSection[]): Promise<MaloSnapshot>;
+  snapshot(input?: SnapshotInput): Promise<MaloSnapshot>;
   extract(input: {
     selector: string;
     mode?: "text" | "html" | "attributes" | "rect";
@@ -63,6 +68,14 @@ function readString(args: Record<string, unknown>, field: string, required = tru
   if (value === undefined && !required) return undefined;
   if (typeof value !== "string" || value.trim() === "") throw bad(`${field} 必须是非空字符串`);
   return value;
+}
+
+/** frame / frame_url：在哪个 iframe 里操作。动作类工具的参数原样透传，这里只管 extract 和 assert。 */
+function readFrameTarget(args: Record<string, unknown>): { frame?: number; frame_url?: string } {
+  const target: { frame?: number; frame_url?: string } = {};
+  if (args.frame !== undefined) target.frame = readInteger(args, "frame", 0, 0, 1_000);
+  if (args.frame_url !== undefined) target.frame_url = readString(args, "frame_url", false);
+  return target;
 }
 
 function readSections(raw: unknown): SnapshotSection[] | undefined {
@@ -118,11 +131,13 @@ export async function invokeMaloTool(
       break;
     }
     case "snapshot":
-      result = await session.snapshot(
-        readInteger(args, "max_chars", 8_000, 0, 30_000),
-        readInteger(args, "max_items", 120, 1, 500),
-        readSections(args.sections),
-      );
+      result = await session.snapshot({
+        max_chars: readInteger(args, "max_chars", 8_000, 0, 30_000),
+        max_items: readInteger(args, "max_items", 120, 1, 500),
+        sections: readSections(args.sections),
+        frame_depth: readOptionalInteger(args, "frame_depth", 0, SNAPSHOT_LIMITS.frameDepth),
+        max_frames: readOptionalInteger(args, "max_frames", 0, SNAPSHOT_LIMITS.maxFrames),
+      });
       break;
     case "extract": {
       const mode = args.mode ?? "text";
@@ -146,6 +161,7 @@ export async function invokeMaloTool(
           : undefined,
         maxChars: readInteger(args, "max_chars", 4_000, 0, 2_000_000),
         all: args.all !== false,
+        ...readFrameTarget(args),
       });
       break;
     }
@@ -191,6 +207,7 @@ export async function invokeMaloTool(
             ? undefined
             : readInteger(args, "count", 0, 0, 1_000_000),
         timeout_ms: readInteger(args, "timeout_ms", 5_000, 0, 120_000),
+        ...readFrameTarget(args),
       };
       if (
         input.visible === undefined &&

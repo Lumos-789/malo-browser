@@ -38,7 +38,7 @@ import { removePartitionDir } from "./profile-store";
 import { NetworkCapture } from "./network-capture";
 import { validateUrl } from "./navigation";
 import type { BrowserSessionOptions, WatchInput } from "./session-internals";
-import { snapshotPage, type SnapshotSection } from "./snapshot";
+import { snapshotPage, type SnapshotInput } from "./snapshot";
 import { withTimeout } from "./timeouts";
 
 export type { BrowserSessionOptions } from "./session-internals";
@@ -371,8 +371,8 @@ export class BrowserSession {
     return observePage(this, mode, maxChars, clipSelector);
   }
 
-  snapshot(maxChars = 8_000, maxItems = 120, sections?: SnapshotSection[]): Promise<MaloSnapshot> {
-    return snapshotPage(this, { maxChars, maxItems, sections });
+  snapshot(input: SnapshotInput = {}): Promise<MaloSnapshot> {
+    return snapshotPage(this, input);
   }
   extract(input: ExtractInput): Promise<MaloExtractResult> {
     return extractElements(this, input);

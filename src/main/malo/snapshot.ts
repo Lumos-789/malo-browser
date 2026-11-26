@@ -1,4 +1,5 @@
-import type { MaloSnapshot } from "../../shared/malo";
+import type { MaloSnapshot, MaloSnapshotFrame } from "../../shared/malo";
+import { listFrames, type FrameEntry } from "./frames";
 import type { SessionInternals } from "./session-internals";
 
 export const SNAPSHOT_SECTIONS = [
@@ -24,12 +25,21 @@ export function isSnapshotSection(value: unknown): value is SnapshotSection {
   return typeof value === "string" && (SNAPSHOT_SECTIONS as readonly string[]).includes(value);
 }
 
-export type SnapshotOptions = {
-  maxChars?: number;
-  maxItems?: number;
+export type SnapshotInput = {
+  max_chars?: number;
+  max_items?: number;
   /** 只采集并列出这些分区；不给 = 全部。没被点名的分区返回空数组。 */
   sections?: SnapshotSection[];
+  /** 读取几层 iframe 里的内容，默认 1（只读直接挂在页面上的）；0 = 只列出 iframe 不读内容。 */
+  frame_depth?: number;
+  /** 最多读取多少个 iframe 的内容，默认 4。 */
+  max_frames?: number;
 };
+
+export type SnapshotOptions = SnapshotInput & { maxChars?: number; maxItems?: number };
+
+/** iframe 列表在主进程里列（要算坐标），页面脚本不采集这一项。 */
+export const SNAPSHOT_LIMITS = { frameDepth: 3, maxFrames: 50 } as const;
 
 export type SnapshotLimits = {
   maxChars: number;
@@ -119,7 +129,7 @@ export function buildSnapshotScript(limits: SnapshotLimits): string {
     const truncated = {
       headings: false, links: false, buttons: false, inputs: false, selects: false,
       forms: false, tables: false, landmarks: false, interactive: false, widgets: false,
-      frames: false, dialogs: false, messages: false, text: false
+      dialogs: false, messages: false, text: false
     };
     const take = (list, item, key) => {
       if (list.length < maxItems) list.push(item);
@@ -246,10 +256,6 @@ export function buildSnapshotScript(limits: SnapshotLimits): string {
     }
 
     const frames = [];
-    if (want("frames")) for (const el of document.querySelectorAll("iframe")) {
-      if (!visible(el)) continue;
-      take(frames, { url: el.src || "", name: el.name || "", title: el.title || "" }, "frames");
-    }
 
     const dialogs = [];
     if (want("dialogs")) for (const el of document.querySelectorAll('dialog[open],[role="dialog"]')) {
@@ -281,16 +287,84 @@ export function buildSnapshotScript(limits: SnapshotLimits): string {
   })()`;
 }
 
+export function frameLimits(input: SnapshotInput): { depth: number; budget: number } {
+  const clamp = (value: number | undefined, fallback: number, max: number) =>
+    Math.max(0, Math.min(max, Math.floor(value ?? fallback)));
+  return {
+    depth: clamp(input.frame_depth, 1, SNAPSHOT_LIMITS.frameDepth),
+    budget: clamp(input.max_frames, 4, SNAPSHOT_LIMITS.maxFrames),
+  };
+}
+
+const toSnapshotFrame = ({ index, parent, url, name, rect }: FrameEntry): MaloSnapshotFrame => ({
+  index,
+  parent,
+  url,
+  name,
+  rect,
+});
+
+/** 列出 iframe，并在层数与数量上限内读取每个 iframe 里的内容（内容读不出来只标注原因，不影响其余部分）。 */
+async function snapshotFrames(
+  session: SessionInternals,
+  limits: SnapshotLimits,
+  input: SnapshotInput,
+): Promise<Pick<MaloSnapshot, "frames" | "frames_error" | "frames_truncated">> {
+  let entries: FrameEntry[];
+  try {
+    entries = await listFrames(session);
+  } catch (error) {
+    return { frames: [], frames_error: (error as Error).message };
+  }
+  const frames = entries.map(toSnapshotFrame);
+  const { depth, budget } = frameLimits(input);
+  if (depth === 0 || budget === 0) return { frames };
+  let used = 0;
+  let truncated = false;
+  for (const [position, entry] of entries.entries()) {
+    if (entry.path.length > depth) continue;
+    if (used >= budget) {
+      truncated = true;
+      continue;
+    }
+    used += 1;
+    try {
+      const content = (await entry.frame.executeJavaScript(
+        buildSnapshotScript({
+          maxChars: Math.floor(limits.maxChars / 2),
+          maxItems: Math.floor(limits.maxItems / 2),
+          sections: limits.sections,
+        }),
+      )) as MaloSnapshot;
+      content.frames = entries
+        .filter((child) => child.parent === entry.index)
+        .map(toSnapshotFrame);
+      frames[position].content = content;
+    } catch (error) {
+      frames[position].content_error = (error as Error).message.split("\n")[0];
+    }
+  }
+  return truncated ? { frames, frames_truncated: true } : { frames };
+}
+
 export async function snapshotPage(
   session: SessionInternals,
-  options: SnapshotOptions = {},
+  input: SnapshotInput = {},
 ): Promise<MaloSnapshot> {
   session.assertOpen();
   session.touch();
-  const limits = snapshotLimits(options);
+  const limits = snapshotLimits({
+    maxChars: input.max_chars,
+    maxItems: input.max_items,
+    sections: input.sections,
+  });
   const snapshot = await session.driver.evaluate<MaloSnapshot>(buildSnapshotScript(limits));
+  if (limits.sections === null || limits.sections.includes("frames")) {
+    Object.assign(snapshot, await snapshotFrames(session, limits, input));
+  }
   session.record("observe.snapshot", {
     sections: limits.sections,
+    frames: snapshot.frames.length,
     links: snapshot.links.length,
     buttons: snapshot.buttons.length,
     inputs: snapshot.inputs.length,

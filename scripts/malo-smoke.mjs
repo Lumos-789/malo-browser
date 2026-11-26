@@ -174,15 +174,51 @@ async function runSmoke(brokerFile) {
     </script>
   </body></html>`;
 
+  // iframe 页面：host 挂一个同源 iframe 和一个跨域 iframe（localhost 与 127.0.0.1 是不同的站，跨域的那个会进独立进程），
+  // 同源的那个里面再嵌一个 grand
+  const GRAND_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>grand</title></head><body style="margin:0">
+    <button id="g" style="position:absolute;left:10px;top:10px;width:60px;height:20px" onclick="document.title='grand-clicked'">grand button</button>
+    <p id="label">grand content</p>
+  </body></html>`;
+  const CHILD_PAGE = (who) => `<!doctype html><html><head><meta charset="utf-8"><title>child</title><style>body { margin: 0; }</style></head><body>
+    <button id="b" style="position:absolute;left:20px;top:30px;width:80px;height:30px" onclick="document.title='clicked';document.getElementById('state').textContent='clicked'">inner</button>
+    <input id="i" style="position:absolute;left:20px;top:80px;width:120px;height:24px">
+    <input type="file" id="f" style="position:absolute;left:20px;top:115px" onchange="document.getElementById('file-name').textContent=this.files[0]?this.files[0].name:'none'">
+    <strong id="file-name" style="position:absolute;left:200px;top:115px">none</strong>
+    <span id="state"></span>
+    <p id="label">child ${who}</p>
+    <span role="tab" aria-selected="false">tab-in-frame</span>
+    ${who === "same" ? '<iframe id="nested" src="/grand" style="position:absolute;left:40px;top:150px;width:100px;height:60px;border:0"></iframe>' : ""}
+    <div style="position:absolute;top:3000px;width:10px;height:10px">tail</div>
+    <script>
+      const root = document.documentElement;
+      const mark = () => { root.dataset.scrollY = String(Math.round(scrollY)); };
+      addEventListener("scroll", mark);
+      mark();
+    </script>
+  </body></html>`;
+
+  let smokePort = 0;
   const loginServer = createServer((request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    const page = request.url?.startsWith("/signed-in")
-      ? "<!doctype html><title>Signed in</title><h1>Signed in</h1>"
-      : request.url?.startsWith("/lab") ? LAB_PAGE : LOGIN_TEST_PAGE;
+    const url = request.url ?? "/";
+    let page;
+    if (url.startsWith("/signed-in")) page = "<!doctype html><title>Signed in</title><h1>Signed in</h1>";
+    else if (url.startsWith("/lab")) page = LAB_PAGE;
+    else if (url.startsWith("/grand")) page = GRAND_PAGE;
+    else if (url.startsWith("/host")) {
+      page = `<!doctype html><html><head><meta charset="utf-8"><title>host</title></head><body style="margin:0">
+        <h1 id="h">host page</h1>
+        <iframe id="same" src="/child?who=same" style="position:absolute;left:100px;top:50px;width:300px;height:200px;border:0"></iframe>
+        <iframe id="cross" src="http://localhost:${smokePort}/child?who=cross" style="position:absolute;left:500px;top:300px;width:300px;height:200px;border:0"></iframe>
+      </body></html>`;
+    } else if (url.startsWith("/child")) page = CHILD_PAGE(new URL(url, "http://127.0.0.1").searchParams.get("who") ?? "plain");
+    else page = LOGIN_TEST_PAGE;
     response.end(page);
   });
   await new Promise((resolve) => loginServer.listen(0, "127.0.0.1", resolve));
   const loginBase = `http://127.0.0.1:${loginServer.address().port}`;
+  smokePort = loginServer.address().port;
 
   function assert(condition, message) {
     if (!condition) throw new Error(message);
@@ -557,6 +593,73 @@ async function runSmoke(brokerFile) {
   const adoptedUrl = (await sessionCall(leaseA, adopter, `/v1/sessions/${adopter.session_id}/observe?mode=light&max_chars=0`)).json.url;
   assert(adoptedUrl.includes("popup=1"), `adopt 模式下页面没有打开弹窗地址：${adoptedUrl}`);
   await sessionCall(leaseA, adopter, `/v1/sessions/${adopter.session_id}/tools/close`, { method: "POST", body: {} });
+
+  // --- iframe：同源、跨域（独立进程）、嵌套三种都能读到内容，并能在指定 iframe 里点击、输入、断言、滚动 ---
+  const { writeFile } = await import("node:fs/promises");
+  const uploadDir = await mkdtemp(path.join(os.tmpdir(), "malo-smoke-upload-"));
+  const uploadPath = path.join(uploadDir, "frame-upload.txt");
+  await writeFile(uploadPath, "from smoke");
+  await sessionCall(leaseA, a1, a1Path("/navigate"), { method: "POST", body: { url: `${loginBase}/host` } });
+  const host = await a1Tool("snapshot", { max_chars: 200, max_items: 30, frame_depth: 2 });
+  assert(host.text.includes("host page"), "host 页面内容不对");
+  const summary = host.frames.map((frame) => [frame.index, frame.parent, frame.url, frame.rect.left, frame.rect.top]);
+  assert(
+    summary.length === 3 &&
+      summary[0][1] === null && summary[0][3] === 100 && summary[0][4] === 50 && summary[0][2].endsWith("/child?who=same") &&
+      summary[1][1] === 0 && summary[1][3] === 140 && summary[1][4] === 200 && summary[1][2].endsWith("/grand") &&
+      summary[2][1] === null && summary[2][3] === 500 && summary[2][4] === 300 && summary[2][2].startsWith("http://localhost:"),
+    `iframe 列表/坐标换算不对：${JSON.stringify(summary)}`,
+  );
+  assert(host.frames[0].content?.text.includes("child same"), `同源 iframe 的内容没读到：${host.frames[0].content_error}`);
+  assert(host.frames[0].content?.buttons.some((button) => button.text === "inner"), "同源 iframe 内容里没有按钮");
+  assert(host.frames[0].content?.widgets.some((widget) => widget.role === "tab"), "iframe 内容里没有 role 组件");
+  assert(host.frames[0].content?.frames.map((frame) => frame.index).join(",") === "1", "嵌套 iframe 的子框架列表编号不对");
+  assert(host.frames[1].content?.text.includes("grand content"), `嵌套 iframe 的内容没读到：${host.frames[1].content_error}`);
+  assert(host.frames[2].content?.text.includes("child cross"), `跨域 iframe 的内容没读到：${host.frames[2].content_error}`);
+  const listed = await a1Tool("snapshot", { max_chars: 0, max_items: 1, frame_depth: 0 });
+  assert(listed.frames.length === 3 && listed.frames.every((frame) => frame.content === undefined), "frame_depth=0 应只列出不读内容");
+
+  await a1Tool("click", { selector: "#b", frame: 2, frame_url: "localhost" });
+  assert((await a1Tool("extract", { selector: "title", mode: "text", frame: 2 })).matches[0].text === "clicked", "跨域 iframe 里的点击没生效");
+  await a1Tool("click", { selector: "#g", frame: 1 });
+  assert((await a1Tool("extract", { selector: "title", mode: "text", frame: 1 })).matches[0].text === "grand-clicked", "嵌套 iframe 里的点击没生效");
+  await a1Tool("fill", { selector: "#i", frame: 0, text: "hello frame" });
+  assert((await a1Tool("extract", { selector: "#i", mode: "text", frame: 0 })).matches[0].text === "hello frame", "同源 iframe 里的 fill 没落地");
+  assert((await a1Tool("assert", { text: "child cross", frame: 2 })).ok === true, "iframe 里的断言没通过");
+
+  // iframe 里的 rect 已换算到顶层坐标：#b 在跨域 iframe 内 (20,30,80x30)，iframe 原点 (500,300)
+  const inFrame = (await a1Tool("extract", { selector: "#b", mode: "rect", frame: 2 })).matches[0].rect;
+  assert(Math.abs(inFrame.x - 560) <= 1 && Math.abs(inFrame.y - 345) <= 1, `iframe 内 rect 没换算到顶层坐标：${JSON.stringify(inFrame)}`);
+
+  // 滚轮落在 iframe 中心：滚的是 iframe 里的页面，外层页面不动
+  await a1Tool("scroll", { dy: 400, frame: 2 });
+  const frameScroll = await a1Tool("extract", { selector: "html", mode: "attributes", attributes: ["data-scroll-y"], frame: 2 });
+  assert(frameScroll.matches[0].attributes["data-scroll-y"] === "400", `iframe 里的滚动没生效：${JSON.stringify(frameScroll.matches[0].attributes)}`);
+  assert((await a1Tool("snapshot", { max_chars: 0, max_items: 1, sections: ["headings"] })).scroll.y === 0, "滚 iframe 时外层页面被带着滚了");
+
+  // 文件上传：同源 iframe 可以，跨域 iframe 明确拒绝
+  await a1Tool("upload_file", { selector: "#f", frame: 0, files: [uploadPath] });
+  assert(
+    (await a1Tool("extract", { selector: "#file-name", mode: "text", frame: 0 })).matches[0].text === "frame-upload.txt",
+    "同源 iframe 里的文件上传没生效",
+  );
+  const crossUpload = await sessionCall(leaseA, a1, a1Path("/tools/upload_file"), {
+    method: "POST",
+    body: { selector: "#f", frame: 2, files: [uploadPath] },
+  });
+  assert(crossUpload.status === 400 && crossUpload.text.includes("跨域"), `跨域 iframe 的上传应被拒绝：${crossUpload.status} ${crossUpload.text.slice(0, 200)}`);
+  await rm(uploadDir, { recursive: true, force: true });
+
+  // 序号无效、URL 保险不匹配、给不支持 frame 的动作传 frame：都是明确的 400
+  for (const [tool, body, needle] of [
+    ["click", { selector: "#b", frame: 9 }, "找不到第 9 个 iframe"],
+    ["click", { selector: "#b", frame: 2, frame_url: "127.0.0.1" }, "页面变了"],
+    ["press", { key: "Enter", frame: 0 }, "不接受 frame"],
+    ["extract", { selector: "#b", frame: -1 }, "frame 必须是"],
+  ]) {
+    const refused = await sessionCall(leaseA, a1, a1Path(`/tools/${tool}`), { method: "POST", body });
+    assert(refused.status === 400 && refused.text.includes(needle), `${tool} ${JSON.stringify(body)} 应被拒绝：${refused.status} ${refused.text.slice(0, 200)}`);
+  }
 
   const loginUrl = `${loginBase}/login`;
   const b1Path = (path) => `/v1/sessions/${b1.session_id}${path}`;

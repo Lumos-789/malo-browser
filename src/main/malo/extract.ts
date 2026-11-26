@@ -1,8 +1,9 @@
 import { DemoError } from "../../shared/errors";
-import type { MaloExtractResult } from "../../shared/malo";
+import type { MaloExtractResult, FrameTarget } from "../../shared/malo";
+import { resolveContext, type PageContext } from "./frames";
 import type { SessionInternals } from "./session-internals";
 
-export type ExtractInput = {
+export type ExtractInput = FrameTarget & {
   selector: string;
   mode?: "text" | "html" | "attributes" | "rect";
   attributes?: string[];
@@ -10,6 +11,7 @@ export type ExtractInput = {
   all?: boolean;
 };
 
+/** 从匹配选择器的元素里取内容；给了 frame 就在那个 iframe 里找，rect 的坐标已换算到顶层视口。 */
 export async function extractElements(session: SessionInternals, input: ExtractInput): Promise<MaloExtractResult> {
   session.assertOpen();
   session.touch();
@@ -25,8 +27,12 @@ export async function extractElements(session: SessionInternals, input: ExtractI
     ? input.attributes.filter((item): item is string => typeof item === "string").slice(0, 40)
     : [];
   const all = input.all !== false;
-  await assertValidSelector(session, input.selector);
-  const result = await session.driver.evaluate<MaloExtractResult>(`(() => {
+  const ctx = await resolveContext(session, input);
+  await assertValidSelector(ctx, input.selector);
+  const inFrame = ctx.frame !== null;
+  const offsetX = ctx.frame?.offset.x ?? 0;
+  const offsetY = ctx.frame?.offset.y ?? 0;
+  const result = await ctx.evaluate<MaloExtractResult>(`(() => {
     const selector = ${JSON.stringify(input.selector)};
     const mode = ${JSON.stringify(mode)};
     const maxChars = ${JSON.stringify(maxChars)};
@@ -62,10 +68,10 @@ export async function extractElements(session: SessionInternals, input: ExtractI
       if (mode === "rect") {
         const box = el.getBoundingClientRect();
         item.rect = {
-          x: box.x + box.width / 2,
-          y: box.y + box.height / 2,
-          left: box.left,
-          top: box.top,
+          x: box.x + box.width / 2 + ${offsetX},
+          y: box.y + box.height / 2 + ${offsetY},
+          left: box.left + ${offsetX},
+          top: box.top + ${offsetY},
           width: box.width,
           height: box.height,
         };
@@ -86,13 +92,14 @@ export async function extractElements(session: SessionInternals, input: ExtractI
   session.record("observe.extract", {
     selector: input.selector,
     mode,
+    frame: ctx.frame?.index ?? null,
     count: result.count,
   });
-  return result;
+  return inFrame ? { ...result, frame: ctx.frame?.index } : result;
 }
 
-export async function assertValidSelector(session: SessionInternals, selector: string): Promise<void> {
-  const error = await session.driver.evaluate<string | null>(`(() => {
+async function assertValidSelector(ctx: PageContext, selector: string): Promise<void> {
+  const error = await ctx.evaluate<string | null>(`(() => {
     try { document.querySelector(${JSON.stringify(selector)}); return null; }
     catch (error) { return String((error && error.message) || error); }
   })()`);

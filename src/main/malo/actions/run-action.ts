@@ -1,11 +1,80 @@
 import { DemoError, stripErrorCode } from "../../../shared/errors";
 import type { MaloAction, MaloActionResult } from "../../../shared/malo";
-import { sleep } from "../../tools";
-import { fillInput } from "./input";
-import { NAMED_KEY_NAMES, isSupportedKey } from "../../keys";
-import { locateByText } from "./pointer";
-import type { SessionInternals } from "../session-internals";
 import { observePage } from "../observation";
+import { resolveContext, type FrameRef } from "../frames";
+import type { SessionInternals } from "../session-internals";
+import { fill, focus, press, select, type, uploadFile } from "./input";
+import { click, drag, hover, scroll, scrollIntoView } from "./pointer";
+import { history, sleepAction, waitFor } from "./wait";
+
+type ActionName = MaloAction["type"];
+type ActionOf<K extends ActionName> = Extract<MaloAction, { type: K }>;
+/** 每个动作拿到会话（发输入事件、记事件）和解析好的页面上下文（顶层页面或某个 iframe）。 */
+export type ActionHandler<K extends ActionName> = (
+  session: SessionInternals,
+  ctx: Awaited<ReturnType<typeof resolveContext>>,
+  action: ActionOf<K>,
+  timeoutMs: number,
+) => Promise<string>;
+
+// 能在 iframe 里执行的动作；其余动作（键盘、拖拽、历史、休眠）作用于整个页面，不接受 frame
+const FRAMED_ACTIONS: ReadonlySet<ActionName> = new Set<ActionName>([
+  "click",
+  "fill",
+  "hover",
+  "select",
+  "focus",
+  "scroll",
+  "scroll_into_view",
+  "wait_for",
+  "upload_file",
+]);
+
+const HANDLERS: { [K in ActionName]: ActionHandler<K> } = {
+  click,
+  fill,
+  drag,
+  upload_file: uploadFile,
+  press,
+  type,
+  scroll,
+  hover,
+  select,
+  focus,
+  scroll_into_view: scrollIntoView,
+  history,
+  wait_for: waitFor,
+  sleep: sleepAction,
+};
+
+function readFrameRef(action: MaloAction, allowed: boolean): FrameRef {
+  const ref = action as { frame?: unknown; frame_url?: unknown };
+  if (ref.frame === undefined && ref.frame_url === undefined) return {};
+  if (!allowed) {
+    throw new DemoError(
+      "E_BAD_REQUEST",
+      `${action.type} 作用于整个页面，不接受 frame 参数（键盘输入会落到当前聚焦的元素上，拖拽请用顶层坐标）`,
+    );
+  }
+  if (ref.frame_url !== undefined && typeof ref.frame_url !== "string") {
+    throw new DemoError("E_BAD_REQUEST", "frame_url 必须是字符串");
+  }
+  return { frame: ref.frame as number | undefined, frame_url: ref.frame_url as string | undefined };
+}
+
+export async function executeAction(
+  session: SessionInternals,
+  action: MaloAction,
+  timeoutMs: number,
+): Promise<string> {
+  const name = action.type as ActionName;
+  const handler = (HANDLERS as Record<string, ActionHandler<ActionName> | undefined>)[name];
+  if (!handler) {
+    throw new DemoError("E_UNSUPPORTED", `未知动作：${String((action as { type?: unknown }).type ?? "")}`);
+  }
+  const ctx = await resolveContext(session, readFrameRef(action, FRAMED_ACTIONS.has(name)));
+  return handler(session, ctx, action, timeoutMs);
+}
 
 export async function runAction(
   session: SessionInternals,
@@ -35,284 +104,5 @@ export async function runAction(
       });
     }
     throw new DemoError("E_UNSUPPORTED", message, { screenshotPath: screenshotPath ?? undefined });
-  }
-}
-
-export async function executeAction(
-  session: SessionInternals,
-  action: MaloAction,
-  timeoutMs: number,
-): Promise<string> {
-  switch (action.type) {
-    case "click": {
-      if (action.selector !== undefined && typeof action.selector !== "string") {
-        throw new DemoError("E_UNSUPPORTED", "click.selector 必须是字符串");
-      }
-      if (action.text !== undefined && (typeof action.text !== "string" || action.text.trim() === "")) {
-        throw new DemoError("E_UNSUPPORTED", "click.text 必须是非空字符串");
-      }
-      if (action.nth !== undefined && (!Number.isInteger(action.nth) || action.nth < 1)) {
-        throw new DemoError("E_UNSUPPORTED", "click.nth 必须是正整数");
-      }
-      const button = action.button ?? "left";
-      if (button !== "left" && button !== "middle" && button !== "right") {
-        throw new DemoError("E_UNSUPPORTED", "click.button 只能是 left / middle / right");
-      }
-      const clickCount = action.click_count ?? 1;
-      if (!Number.isInteger(clickCount) || clickCount < 1 || clickCount > 3) {
-        throw new DemoError("E_UNSUPPORTED", "click.click_count 必须是 1-3 的整数");
-      }
-      let point: { x?: number; y?: number };
-      let target: string | undefined;
-      if (action.text !== undefined) {
-        const found = await locateByText(session, action.text, action.selector, action.nth ?? 1);
-        point = { x: found.x, y: found.y };
-        target = `text「${action.text}」@${found.tag}`;
-      } else if (action.selector) {
-        point = await session.driver.rect(action.selector);
-        target = action.selector;
-      } else {
-        point = { x: action.x, y: action.y };
-      }
-      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-        throw new DemoError("E_UNSUPPORTED", "click 需要 selector、text 或 x/y 坐标");
-      }
-      await session.driver.move({ x: point.x as number, y: point.y as number });
-      await session.driver.click(
-        { x: point.x as number, y: point.y as number },
-        { button, clickCount },
-      );
-      return `clicked ${target ?? `${point.x},${point.y}`}`;
-    }
-    case "fill": {
-      if (typeof action.selector !== "string" || action.selector.trim() === "") {
-        throw new DemoError("E_UNSUPPORTED", "fill.selector 必须是非空字符串");
-      }
-      if (typeof action.text !== "string") {
-        throw new DemoError("E_UNSUPPORTED", "fill.text 必须是字符串");
-      }
-      if (action.verify !== undefined && typeof action.verify !== "boolean") {
-        throw new DemoError("E_UNSUPPORTED", "fill.verify 必须是布尔值");
-      }
-      return await fillInput(session, action);
-    }
-    case "drag": {
-      if (typeof action.from_x !== "number" || !Number.isFinite(action.from_x)) {
-        throw new DemoError("E_UNSUPPORTED", "drag.from_x 必须是有限数字");
-      }
-      if (typeof action.from_y !== "number" || !Number.isFinite(action.from_y)) {
-        throw new DemoError("E_UNSUPPORTED", "drag.from_y 必须是有限数字");
-      }
-      if (typeof action.to_x !== "number" || !Number.isFinite(action.to_x)) {
-        throw new DemoError("E_UNSUPPORTED", "drag.to_x 必须是有限数字");
-      }
-      if (typeof action.to_y !== "number" || !Number.isFinite(action.to_y)) {
-        throw new DemoError("E_UNSUPPORTED", "drag.to_y 必须是有限数字");
-      }
-      const steps = action.steps ?? 12;
-      if (!Number.isInteger(steps) || steps < 1 || steps > 100) {
-        throw new DemoError("E_UNSUPPORTED", "drag.steps 必须是 1-100 的整数");
-      }
-      await session.driver.drag(
-        { x: action.from_x, y: action.from_y },
-        { x: action.to_x, y: action.to_y },
-        steps,
-      );
-      return `dragged (${action.from_x},${action.from_y}) -> (${action.to_x},${action.to_y}) in ${steps} steps`;
-    }
-    case "upload_file": {
-      if (typeof action.selector !== "string" || action.selector.trim() === "") {
-        throw new DemoError("E_UNSUPPORTED", "upload_file.selector 必须是非空字符串");
-      }
-      if (!Array.isArray(action.files) || action.files.length === 0) {
-        throw new DemoError("E_UNSUPPORTED", "upload_file.files 必须是非空字符串数组");
-      }
-      if (action.files.some((item) => typeof item !== "string" || item.trim() === "")) {
-        throw new DemoError("E_UNSUPPORTED", "upload_file.files 必须是非空字符串数组");
-      }
-      await session.driver.uploadFiles(action.selector, action.files);
-      return `uploaded ${action.files.length} file(s) to ${action.selector}`;
-    }
-    case "press": {
-      if (typeof action.key !== "string" || action.key === "") {
-        throw new DemoError("E_UNSUPPORTED", "press.key 必须是非空字符串");
-      }
-      if (!isSupportedKey(action.key)) {
-        throw new DemoError(
-          "E_UNSUPPORTED",
-          `press.key 不支持：${action.key}；可用单字符或 ${NAMED_KEY_NAMES.join(" / ")}`,
-        );
-      }
-      if (
-        action.modifiers !== undefined &&
-        (!Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15)
-      ) {
-        throw new DemoError("E_UNSUPPORTED", "press.modifiers 必须是 0-15 的整数位掩码");
-      }
-      await session.driver.press(action.key, action.modifiers ?? 0);
-      return `pressed ${action.key}`;
-    }
-    case "scroll": {
-      if (action.dx !== undefined && !Number.isFinite(action.dx)) {
-        throw new DemoError("E_UNSUPPORTED", "scroll.dx 必须是有限数字");
-      }
-      if (action.dy !== undefined && !Number.isFinite(action.dy)) {
-        throw new DemoError("E_UNSUPPORTED", "scroll.dy 必须是有限数字");
-      }
-      const hasX = action.x !== undefined;
-      const hasY = action.y !== undefined;
-      if ((hasX !== hasY || (hasX && (!Number.isFinite(action.x) || !Number.isFinite(action.y))))) {
-        throw new DemoError("E_UNSUPPORTED", "scroll 落点需要同时给有限的 x 和 y");
-      }
-      const delta = { x: action.dx ?? 0, y: action.dy ?? 0 };
-      const origin = typeof action.x === "number" && typeof action.y === "number"
-        ? { x: action.x, y: action.y }
-        : undefined;
-      await session.driver.scroll(delta, origin);
-      return `scrolled ${delta.x},${delta.y}${origin ? ` at ${origin.x},${origin.y}` : ""}`;
-    }
-    case "type": {
-      if (typeof action.text !== "string" || action.text === "") {
-        throw new DemoError("E_UNSUPPORTED", "type.text 必须是非空字符串");
-      }
-      if (action.text.length > 5_000) {
-        throw new DemoError("E_UNSUPPORTED", "type.text 最长 5000 字符，长文本请用 fill");
-      }
-      const delay = action.delay_ms ?? 0;
-      if (!Number.isInteger(delay) || delay < 0 || delay > 1000) {
-        throw new DemoError("E_UNSUPPORTED", "type.delay_ms 必须是 0-1000 的整数");
-      }
-      await session.driver.typeText(action.text, delay);
-      return `typed ${[...action.text].length} chars`;
-    }
-    case "hover": {
-      if (action.selector !== undefined && typeof action.selector !== "string") {
-        throw new DemoError("E_UNSUPPORTED", "hover.selector 必须是字符串");
-      }
-      const point = action.selector
-        ? await session.driver.rect(action.selector)
-        : { x: action.x, y: action.y };
-      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-        throw new DemoError("E_UNSUPPORTED", "hover 需要 selector 或 x/y 坐标");
-      }
-      await session.driver.move({ x: point.x as number, y: point.y as number });
-      return `hovered ${action.selector ?? `${point.x},${point.y}`}`;
-    }
-    case "select": {
-      if (typeof action.selector !== "string" || action.selector.trim() === "") {
-        throw new DemoError("E_UNSUPPORTED", "select.selector 必须是非空字符串");
-      }
-      if (action.value === undefined && action.label === undefined) {
-        throw new DemoError("E_UNSUPPORTED", "select 需要 value 或 label");
-      }
-      const result = await session.driver.evaluate<string>(`(() => {
-        const el = document.querySelector(${JSON.stringify(action.selector)});
-        if (!el) return "__MISSING__";
-        if (el.tagName !== "SELECT") return "__NOT_SELECT__";
-        const value = ${JSON.stringify(action.value ?? null)};
-        const label = ${JSON.stringify(action.label ?? null)};
-        if (value !== null) {
-          if (!Array.from(el.options).some((item) => item.value === value)) return "__NO_VALUE__";
-          el.value = value;
-        } else {
-          const option = Array.from(el.options).find((item) => item.text.trim() === label);
-          if (!option) return "__NO_OPTION__";
-          el.value = option.value;
-        }
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-        return String(el.value);
-      })()`);
-      if (result === "__MISSING__") {
-        throw new DemoError("E_SELECTOR_NOT_FOUND", `找不到元素 ${action.selector}`, {
-          selector: action.selector,
-        });
-      }
-      if (result === "__NOT_SELECT__") {
-        throw new DemoError("E_UNSUPPORTED", `元素不是 select：${action.selector}`);
-      }
-      if (result === "__NO_OPTION__") {
-        throw new DemoError("E_UNSUPPORTED", `找不到选项 label：${action.label}`);
-      }
-      if (result === "__NO_VALUE__") {
-        throw new DemoError("E_UNSUPPORTED", `找不到选项 value：${action.value}`);
-      }
-      return `selected ${action.selector}=${result}`;
-    }
-    case "focus": {
-      if (typeof action.selector !== "string" || action.selector.trim() === "") {
-        throw new DemoError("E_UNSUPPORTED", "focus.selector 必须是非空字符串");
-      }
-      const focused = await session.driver.evaluate<boolean>(`(() => {
-        const el = document.querySelector(${JSON.stringify(action.selector)});
-        if (!el) return false;
-        el.focus();
-        return document.activeElement === el;
-      })()`);
-      if (!focused) {
-        throw new DemoError("E_SELECTOR_NOT_FOUND", `无法聚焦元素 ${action.selector}`, {
-          selector: action.selector,
-        });
-      }
-      return `focused ${action.selector}`;
-    }
-    case "scroll_into_view": {
-      if (typeof action.selector !== "string" || action.selector.trim() === "") {
-        throw new DemoError("E_UNSUPPORTED", "scroll_into_view.selector 必须是非空字符串");
-      }
-      const scrolled = await session.driver.evaluate<boolean>(`(() => {
-        const el = document.querySelector(${JSON.stringify(action.selector)});
-        if (!el) return false;
-        el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-        return true;
-      })()`);
-      if (!scrolled) {
-        throw new DemoError("E_SELECTOR_NOT_FOUND", `找不到元素 ${action.selector}`, {
-          selector: action.selector,
-        });
-      }
-      return `scrolled into view ${action.selector}`;
-    }
-    case "history": {
-      if (action.action !== "back" && action.action !== "forward" && action.action !== "reload") {
-        throw new DemoError("E_UNSUPPORTED", "history.action 只能是 back / forward / reload");
-      }
-      const wc = session.stage.view.webContents;
-      const history = wc.navigationHistory;
-      if (action.action === "back") history.goBack();
-      else if (action.action === "forward") history.goForward();
-      else wc.reload();
-      await sleep(300);
-      return `history ${action.action}`;
-    }
-    case "wait_for": {
-      if (action.timeout_ms !== undefined && (!Number.isFinite(action.timeout_ms) || action.timeout_ms < 0)) {
-        throw new DemoError("E_UNSUPPORTED", "wait_for.timeout_ms 必须是非负数字");
-      }
-      if (action.selector) {
-        const state = action.state ?? "visible";
-        if (state !== "attached" && state !== "visible" && state !== "hidden") {
-          throw new DemoError("E_UNSUPPORTED", "wait_for.state 只能是 attached / visible / hidden");
-        }
-        await session.driver.waitForSelector(action.selector, state, action.timeout_ms ?? timeoutMs);
-        return `selector ${state}: ${action.selector}`;
-      }
-      if (action.text) {
-        await session.driver.waitForText(action.text, action.timeout_ms ?? timeoutMs);
-        return `text appeared: ${action.text}`;
-      }
-      throw new DemoError("E_UNSUPPORTED", "wait_for 需要 selector 或 text");
-    }
-    case "sleep": {
-      if (!Number.isFinite(action.ms) || action.ms < 0 || action.ms > 120_000) {
-        throw new DemoError("E_UNSUPPORTED", "sleep.ms 必须是 0-120000 的毫秒数");
-      }
-      await sleep(action.ms);
-      return `slept ${action.ms}ms`;
-    }
-    default: {
-      const unknown = action as { type?: string };
-      throw new DemoError("E_UNSUPPORTED", `未知动作：${unknown.type ?? ""}`);
-    }
   }
 }

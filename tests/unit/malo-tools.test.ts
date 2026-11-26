@@ -163,7 +163,13 @@ describe("malo-browser tool manifest", () => {
     expect(session.navigate).toHaveBeenCalledWith("https://example.com", 30_000, 100);
 
     await invokeMaloTool("snapshot", { max_chars: 100, max_items: 5 }, session);
-    expect(session.snapshot).toHaveBeenCalledWith(100, 5, undefined);
+    expect(session.snapshot).toHaveBeenCalledWith({
+      max_chars: 100,
+      max_items: 5,
+      sections: undefined,
+      frame_depth: undefined,
+      max_frames: undefined,
+    });
 
     await invokeMaloTool("observe", { mode: "screenshot", clip_selector: "#player" }, session);
     expect(session.observe).toHaveBeenCalledWith("screenshot", 2_000, "#player");
@@ -539,7 +545,13 @@ describe("malo-browser tool dispatch additions", () => {
     const session = fakeSession();
 
     await invokeMaloTool("snapshot", { sections: ["widgets", "links"] }, session);
-    expect(session.snapshot).toHaveBeenCalledWith(8_000, 120, ["widgets", "links"]);
+    expect(session.snapshot).toHaveBeenCalledWith({
+      max_chars: 8_000,
+      max_items: 120,
+      sections: ["widgets", "links"],
+      frame_depth: undefined,
+      max_frames: undefined,
+    });
 
     for (const sections of [[], "links", ["links", "iframes"], [42]]) {
       await expect(invokeMaloTool("snapshot", { sections }, session)).rejects.toMatchObject({

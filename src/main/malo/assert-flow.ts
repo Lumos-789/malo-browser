@@ -1,6 +1,7 @@
 import { DemoError } from "../../shared/errors";
 import type { MaloAssertInput, MaloAssertResult } from "../../shared/malo";
 import { buildAssertChecks, describeAssertFailure, type MaloAssertState } from "./assertions";
+import { resolveContext, type PageContext } from "./frames";
 import { sleep } from "../tools";
 import type { SessionInternals } from "./session-internals";
 
@@ -11,10 +12,12 @@ export async function checkExpectations(
   session.assertOpen();
   session.touch();
   const timeoutMs = Math.max(0, Math.min(120_000, Math.floor(input.timeout_ms ?? 5_000)));
+  // 先解析一次目标页面上下文：iframe 序号无效、或页面正在变化时立刻失败，不进轮询
+  const ctx = await resolveContext(session, input);
   const started = Date.now();
   for (;;) {
     session.assertOpen();
-    const state = await readAssertState(session, input);
+    const state = await readAssertState(ctx, input);
     if (state.invalid_selector !== null) {
       throw new DemoError("E_BAD_REQUEST", `assert 选择器无效：${state.invalid_selector}`);
     }
@@ -49,7 +52,7 @@ export async function checkExpectations(
   }
 }
 
-export async function readAssertState(session: SessionInternals, input: MaloAssertInput): Promise<MaloAssertState> {
+export async function readAssertState(ctx: PageContext, input: MaloAssertInput): Promise<MaloAssertState> {
   const params = {
     selector: input.selector ?? null,
     visible: input.visible ?? null,
@@ -58,7 +61,7 @@ export async function readAssertState(session: SessionInternals, input: MaloAsse
     wants_value: input.value !== undefined,
     wants_count: input.count !== undefined,
   };
-  return session.driver.evaluate<MaloAssertState>(`(() => {
+  return ctx.evaluate<MaloAssertState>(`(() => {
     const params = ${JSON.stringify(params)};
     const out = {
       url: location.href,

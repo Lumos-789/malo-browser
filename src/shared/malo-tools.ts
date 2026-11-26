@@ -9,6 +9,19 @@ export type MaloToolDefinition = {
   };
 };
 
+/** 在哪个 iframe 里操作：frame 是 snapshot.frames 的下标，不给就是顶层页面。 */
+const FRAME_TARGET_PROPERTIES = {
+  frame: {
+    type: "integer",
+    minimum: 0,
+    description: "Index into snapshot.frames: act inside that iframe. Omit for the top-level page.",
+  },
+  frame_url: {
+    type: "string",
+    description: "Guard: the iframe's URL must contain this substring, otherwise the page changed and the index is stale.",
+  },
+} as const;
+
 export const MALO_TOOLS: MaloToolDefinition[] = [
   {
     name: "navigate",
@@ -63,6 +76,21 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
           description:
             "Only collect these lists: text, headings, links, buttons, inputs, selects, forms, tables, landmarks, interactive, widgets, frames, dialogs, messages.",
         },
+        frame_depth: {
+          type: "integer",
+          minimum: 0,
+          maximum: 3,
+          default: 1,
+          description:
+            "How many iframe levels to read content from. frames[] lists every visible iframe with its index and box; each entry's content is a nested snapshot (its rects are relative to that iframe's own viewport). 0 lists iframes without reading them. To act inside one, pass its index as frame.",
+        },
+        max_frames: {
+          type: "integer",
+          minimum: 0,
+          maximum: 50,
+          default: 4,
+          description: "How many iframes to read content from at most; frames_truncated tells you when more were left out.",
+        },
       },
       additionalProperties: false,
     },
@@ -87,6 +115,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
         y: { type: "number" },
         button: { type: "string", enum: ["left", "middle", "right"], default: "left" },
         click_count: { type: "integer", minimum: 1, maximum: 3, default: 1 },
+        ...FRAME_TARGET_PROPERTIES,
       },
       additionalProperties: false,
     },
@@ -106,6 +135,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
           default: true,
           description: "Read the value back after filling. Turn off only for pages that rewrite input.",
         },
+        ...FRAME_TARGET_PROPERTIES,
       },
       required: ["selector", "text"],
       additionalProperties: false,
@@ -142,6 +172,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
           minItems: 1,
           description: "Absolute paths on the host running the browser.",
         },
+        ...FRAME_TARGET_PROPERTIES,
       },
       required: ["selector", "files"],
       additionalProperties: false,
@@ -190,6 +221,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
         selector: { type: "string" },
         x: { type: "number" },
         y: { type: "number" },
+        ...FRAME_TARGET_PROPERTIES,
       },
       additionalProperties: false,
     },
@@ -203,6 +235,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
         selector: { type: "string" },
         value: { type: "string" },
         label: { type: "string" },
+        ...FRAME_TARGET_PROPERTIES,
       },
       required: ["selector"],
       additionalProperties: false,
@@ -213,7 +246,10 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
     description: "Focus an element without clicking it.",
     input_schema: {
       type: "object",
-      properties: { selector: { type: "string" } },
+      properties: {
+        selector: { type: "string" },
+        ...FRAME_TARGET_PROPERTIES,
+      },
       required: ["selector"],
       additionalProperties: false,
     },
@@ -229,6 +265,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
         dy: { type: "number", default: 0 },
         x: { type: "number", description: "Wheel position in viewport coordinates (give both x and y)." },
         y: { type: "number" },
+        ...FRAME_TARGET_PROPERTIES,
       },
       additionalProperties: false,
     },
@@ -238,7 +275,10 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
     description: "Scroll an element into the center of the viewport.",
     input_schema: {
       type: "object",
-      properties: { selector: { type: "string" } },
+      properties: {
+        selector: { type: "string" },
+        ...FRAME_TARGET_PROPERTIES,
+      },
       required: ["selector"],
       additionalProperties: false,
     },
@@ -255,6 +295,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
         attributes: { type: "array", items: { type: "string" } },
         max_chars: { type: "integer", minimum: 0, maximum: 2000000, default: 4000 },
         all: { type: "boolean", default: true },
+        ...FRAME_TARGET_PROPERTIES,
       },
       required: ["selector"],
       additionalProperties: false,
@@ -270,6 +311,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
         text: { type: "string" },
         state: { type: "string", enum: ["attached", "visible", "hidden"], default: "visible" },
         timeout_ms: { type: "integer", minimum: 0, maximum: 120000, default: 10000 },
+        ...FRAME_TARGET_PROPERTIES,
       },
       additionalProperties: false,
     },
@@ -298,6 +340,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
           default: 5000,
           description: "How long to retry before failing.",
         },
+        ...FRAME_TARGET_PROPERTIES,
       },
       additionalProperties: false,
     },
