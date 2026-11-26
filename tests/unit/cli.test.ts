@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { isHelpRequested, isVersionRequested, KNOWN_FLAGS, parseOptions, USAGE } from "../../src/main/cli";
+import {
+  debugPortFromArgv,
+  isHelpRequested,
+  isVersionRequested,
+  KNOWN_FLAGS,
+  parseOptions,
+  USAGE,
+} from "../../src/main/cli";
 
 describe("cli window defaults", () => {
   it("opens the stage without focus for an interactive app session", () => {
@@ -131,6 +138,35 @@ describe("cli daemon flags", () => {
     expect(options.artifactTtlHours).toBe(168);
     expect(options.idleExitSeconds).toBe(1800);
     expect(options.dataDir.endsWith(".malo-browser")).toBe(true);
+    // 抢前台默认关；profile 的缓存清理默认开、过期删除默认关
+    expect(options.visibleGraceSeconds).toBe(1800);
+    expect(options.allowFocus).toBe(false);
+    expect(options.profileCacheIdleHours).toBe(72);
+    expect(options.profileTtlDays).toBe(0);
+  });
+
+  it("parses the focus switch and the profile retention knobs", () => {
+    const options = parseOptions([
+      "--mode=daemon",
+      "--visible-grace-seconds=0",
+      "--allow-focus=true",
+      "--profile-cache-idle-hours=0",
+      "--profile-ttl-days=30",
+    ]);
+    expect(options.visibleGraceSeconds).toBe(0);
+    expect(options.allowFocus).toBe(true);
+    expect(options.profileCacheIdleHours).toBe(0);
+    expect(options.profileTtlDays).toBe(30);
+    // 只写 --allow-focus（不带 =true）等同于 =true，和其他布尔开关一致
+    expect(parseOptions(["--mode=daemon", "--allow-focus"]).allowFocus).toBe(true);
+    expect(() => parseOptions(["--mode=daemon", "--profile-ttl-days=-1"])).toThrow(/0-3650/);
+    expect(() => parseOptions(["--mode=daemon", "--visible-grace-seconds=1.5"])).toThrow(/0-86400/);
+  });
+
+  it("reports the Chromium CDP debug port when the daemon was started with one", () => {
+    expect(debugPortFromArgv([".", "--mode=daemon"])).toBeNull();
+    expect(debugPortFromArgv([".", "--mode=daemon", "--remote-debugging-port=9450"])).toBe(9450);
+    expect(debugPortFromArgv([".", "--remote-debugging-port"])).toBeNull();
   });
 
   it("accepts an isolated port range and explicit data dir", () => {

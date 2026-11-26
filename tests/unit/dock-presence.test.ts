@@ -48,7 +48,7 @@ vi.mock("electron", () => ({
     }
   },
   WebContentsView: class FakeWebContentsView {
-    readonly webContents = {} as never;
+    readonly webContents = { isDestroyed: () => false, close: vi.fn() } as never;
     setBounds = vi.fn();
   },
   ipcMain: { handle: () => undefined, removeHandler: () => undefined },

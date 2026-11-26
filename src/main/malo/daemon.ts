@@ -6,6 +6,7 @@ import { publicLease, startBrokerServer, type BrokerServer } from "./broker-serv
 import { startLeaseServer, type LeaseServer } from "./lease-server";
 import { MALO_FEATURES } from "../../shared/malo-tools";
 import { LeaseManager, type LeaseRecord } from "./lease-manager";
+import { shouldKeepLease } from "./lease-keep";
 import { maloVersion } from "./version";
 import { PortPool } from "./port-pool";
 import { ProfileStore } from "./profile-store";
@@ -24,9 +25,19 @@ export type MaloDaemonOptions = {
   maxSessionsTotal: number;
   /** 租约目录（下载、失败截图、run report）保留多少小时；0 = 启动时不清理。 */
   artifactTtlHours: number;
+  /** 启动时清掉多久没用过的 profile 的网页缓存；0 = 不清。 */
+  profileCacheIdleHours: number;
+  /** 启动时删掉多久没用过的 profile（连同登录态）；0 = 不删。 */
+  profileTtlDays: number;
+  /** 允许 watch/login 以 focus=true 把窗口带到前台。 */
+  allowFocus?: boolean;
+  /** 进程带着 CDP 调试口启动时记下端口号，写进 /health 让客户端看得见。 */
+  debugPort?: number | null;
   dataDir: string;
   brokerToken?: string;
   reaperIntervalMs?: number;
+  /** 窗口显示给人的会话所属租约，在客户端多久没活动后照常回收；默认 30 分钟，0 = 不宽限。 */
+  visibleGraceMs?: number;
   /** 无租约且无请求超过这么久就退出进程；0/不传＝不退出。 */
   idleExitMs?: number;
   /** 空闲退出时回调（由宿主负责真正退出 Electron）。 */
@@ -37,6 +48,8 @@ export type MaloHandshake = {
   version: string;
   features: string[];
   leaseTtlSeconds: number;
+  /** 没开调试口时为 null。调试口没有鉴权：开着就等于本机任何进程都能操作全部会话。 */
+  debugPort: number | null;
 };
 
 type LeaseRuntime = {
@@ -117,6 +130,18 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+function describeSweep(
+  swept: Awaited<ReturnType<typeof sweepStartupData>>,
+  artifactTtlHours: number,
+): string {
+  const parts: string[] = [];
+  if (swept.anonymous_partitions > 0) parts.push(`匿名分区 ${swept.anonymous_partitions} 个`);
+  if (swept.lease_dirs > 0) parts.push(`超过 ${artifactTtlHours}h 的租约目录 ${swept.lease_dirs} 个`);
+  if (swept.trimmed_profile_caches > 0) parts.push(`闲置 profile 的网页缓存 ${swept.trimmed_profile_caches} 个`);
+  if (swept.expired_profiles.length > 0) parts.push(`过期 profile ${swept.expired_profiles.join(", ")}`);
+  return parts.length > 0 ? parts.join("、") : "无残留";
+}
+
 export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<MaloDaemon> {
   if (options.brokerPort >= options.portMin && options.brokerPort <= options.portMax) {
     throw new Error(
@@ -146,25 +171,47 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
     }
     console.error(`[malo] 覆盖陈旧 broker 文件：${brokerFile}`);
   }
+  const debugPort = options.debugPort ?? null;
+  if (debugPort !== null) {
+    console.error(
+      `[malo] 警告：CDP 调试口已开启（127.0.0.1:${debugPort}），它没有鉴权——` +
+        `本机任何进程连上都能操作这个 daemon 里的全部会话和已登录档案，` +
+        `经它做的点击、输入也不会进会话事件。多人多 agent 共用的 daemon 不应开调试口。`,
+    );
+  }
   const handshake: MaloHandshake = {
     version: maloVersion(),
     features: MALO_FEATURES,
     leaseTtlSeconds: Math.round(options.leaseTtlMs / 1000),
+    debugPort,
   };
   const brokerToken = options.brokerToken ?? crypto.randomBytes(32).toString("hex");
   const pool = new PortPool(options.portMin, options.portMax);
   const leases = new LeaseManager(options.leaseTtlMs);
   const budget = new SessionBudget(options.maxSessionsTotal);
-  // 上次运行的残留（匿名分区、过期租约目录）在开始监听前清掉：这时还没有任何会话，不会误删在用的。
-  // 清理失败不拦启动——残留只是占盘，拦下来等于让所有 agent 都用不了；但要把原因喊出来。
+  // 上次运行的残留（匿名分区、闲置 profile 的缓存、过期租约目录）在开始监听前清掉：这时还没有任何
+  // 会话，不会误删在用的。清理失败不拦启动——残留只是占盘，拦下来等于让所有 agent 都用不了；
+  // 但要把原因喊出来。
   try {
-    const swept = await sweepStartupData(dataDir, options.artifactTtlHours);
-    if (swept.anonymous_partitions > 0 || swept.lease_dirs > 0) {
+    const profiles = (await profileStore.list()).map((profile) => ({
+      name: profile.name,
+      lastUsedAtMs: profileStore.lastUsedAtMs(profile.name),
+    }));
+    const swept = await sweepStartupData(dataDir, {
+      artifactTtlHours: options.artifactTtlHours,
+      profileCacheIdleHours: options.profileCacheIdleHours,
+      profileTtlDays: options.profileTtlDays,
+      profiles,
+    });
+    for (const name of swept.expired_profiles) await profileStore.remove(name);
+    if (swept.unregistered_profile_partitions.length > 0) {
       console.error(
-        `[malo] 启动清扫：上次运行遗留的匿名分区 ${swept.anonymous_partitions} 个、` +
-          `超过 ${options.artifactTtlHours}h 的租约目录 ${swept.lease_dirs} 个已删除`,
+        `[malo] 有 ${swept.unregistered_profile_partitions.length} 个 profile 分区目录没有登记` +
+          `（${swept.unregistered_profile_partitions.join(", ")}）：登录态文件还在但没人认领，` +
+          `不会自动删；确认无用后可手动删除 chromium/Partitions/ 下对应目录`,
       );
     }
+    console.error(`[malo] 启动清扫：${describeSweep(swept, options.artifactTtlHours)}`);
   } catch (error) {
     console.error(`[malo] 启动清扫失败（不影响会话，残留会继续占盘）：${(error as Error).message}`);
   }
@@ -180,7 +227,7 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
     runtimes.delete(lease.id);
     if (runtime) await runtime.server.close();
     pool.release(lease.port);
-    console.error(`[malo] lease ${lease.id} released (${reason})`);
+    console.error(`[malo] lease ${lease.id} (agent=${lease.agentId}) released (${reason})`);
   };
 
   const releaseLease = async (id: string, reason: string): Promise<void> => {
@@ -196,6 +243,7 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
     version: handshake.version,
     features: handshake.features,
     leaseTtlSeconds: handshake.leaseTtlSeconds,
+    debugPort,
     createLease: async (agentId, holderId) => {
       touch();
       const normalized = agentId.trim();
@@ -226,6 +274,7 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
           profiles: profileStore,
           partitionsDir: path.join(dataDir, "chromium", "Partitions"),
           budget,
+          allowFocus: options.allowFocus,
         });
         try {
           const server = await startLeaseServer({
@@ -237,6 +286,7 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
             sessionIdleMs: options.sessionIdleMs,
             version: handshake.version,
             features: handshake.features,
+            debugPort,
             onActivity: () => {
               touch();
               try {
@@ -247,6 +297,10 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
             },
           });
           runtimes.set(lease.id, { manager, server });
+          console.error(
+            `[malo] lease ${lease.id} (agent=${lease.agentId}${holderId ? ` holder=${holderId}` : ""}) ` +
+              `created on port ${port}`,
+          );
           return publicLease(lease, handshake);
         } catch (error) {
           leases.remove(lease.id);
@@ -267,7 +321,7 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
       touch();
       try {
         const lease = leases.heartbeat(id);
-        console.error(`[malo] lease ${id} heartbeat`);
+        if (process.env.DEMO_DEBUG) console.error(`[malo] lease ${id} heartbeat`);
         return lease;
       } catch {
         throw new DemoError("E_LEASE_NOT_FOUND", `lease 不存在：${id}`);
@@ -289,14 +343,22 @@ export async function launchMaloDaemon(options: MaloDaemonOptions): Promise<Malo
     }),
   });
 
+  const visibleGraceMs = options.visibleGraceMs ?? 30 * 60_000;
   const reaper = setInterval(() => {
     void (async () => {
       // 有请求正在处理的租约不回收：客户端活着在等一个长操作的结果（长批次、登录等待），
       // 单条请求跑得比 TTL 长不该被腰斩——给它续一期，等这批请求回来再按常规回收。
-      const expired = leases.expire(
-        Date.now(),
-        (lease) => (runtimes.get(lease.id)?.server.inflight() ?? 0) > 0,
-      );
+      // 窗口显示给人的会话同理宽限，但客户端超过宽限期还没动静就照常回收。
+      const now = Date.now();
+      const expired = leases.expire(now, (lease) => {
+        const runtime = runtimes.get(lease.id);
+        return shouldKeepLease({
+          inflight: runtime?.server.inflight() ?? 0,
+          visibleSessions: runtime?.manager.list().filter((session) => session.visible).length ?? 0,
+          silentForMs: now - lease.lastHeartbeatMs,
+          visibleGraceMs,
+        });
+      });
       for (const lease of expired) {
         try {
           await teardownLease(lease, "expired");

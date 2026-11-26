@@ -177,6 +177,7 @@ describe("broker server", () => {
       service: "malo-broker",
       version: VERSION,
       features: FEATURES,
+      debug_port: null,
     });
 
     const foreign = await request(server.port, {
@@ -423,6 +424,12 @@ async function startLeaseHarness(onActivity?: () => void): Promise<{
       },
     ]),
     clearProfile: vi.fn(async (name: string) => ({ profile: name, existed: true })),
+    pruneProfiles: vi.fn(async (minIdleDays: number, apply: boolean) => ({
+      min_idle_days: minIdleDays,
+      apply,
+      candidates: [],
+      removed: [],
+    })),
     importProfileLogin: vi.fn(async (name: string, input: { cdp_url: string }) => ({
       profile: name,
       created: true,
@@ -725,10 +732,76 @@ describe("lease server", () => {
       method: "POST",
       path: "/v1/profiles/work/import",
       headers: leaseHeaders(),
-      body: JSON.stringify({ cdp_url: "http://127.0.0.1:9223" }),
+      body: JSON.stringify({ cdp_url: "http://127.0.0.1:9223", domains: ["example.com"] }),
     });
     expect(failing.status).toBe(502);
     expect(JSON.parse(failing.body).error.code).toBe("E_IMPORT_SOURCE_UNREACHABLE");
+    expect(vi.mocked(harness.manager.importProfileLogin)).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses an import without an explicit domain list", async () => {
+    const harness = await startLeaseHarness();
+    const importCall = (body: Record<string, unknown>) =>
+      request(harness.server.port, {
+        method: "POST",
+        path: "/v1/profiles/work/import",
+        headers: leaseHeaders(),
+        body: JSON.stringify(body),
+      });
+
+    // 不给 domains = 把源浏览器里所有站点的登录态整包搬进来，不能是默认值
+    for (const body of [
+      { cdp_url: "http://127.0.0.1:9223" },
+      { cdp_url: "http://127.0.0.1:9223", domains: [] },
+      { cdp_url: "http://127.0.0.1:9223", domains: "example.com" },
+    ]) {
+      const refused = await importCall(body);
+      expect(refused.status).toBe(400);
+      expect(JSON.parse(refused.body).error.message).toContain("domains");
+    }
+    expect(vi.mocked(harness.manager.importProfileLogin)).not.toHaveBeenCalled();
+
+    const trimmed = await importCall({ cdp_url: "http://127.0.0.1:9223", domains: [" example.com "] });
+    expect(trimmed.status).toBe(200);
+    expect(vi.mocked(harness.manager.importProfileLogin).mock.calls[0][1].domains).toEqual([
+      "example.com",
+    ]);
+  });
+
+  it("previews idle profiles by default and deletes them only with apply=true", async () => {
+    const harness = await startLeaseHarness();
+    harness.manager.pruneProfiles = vi.fn(async (_days: number, apply: boolean) => ({
+      min_idle_days: 14,
+      apply,
+      candidates: ["probe-a", "probe-b"],
+      removed: apply ? ["probe-a", "probe-b"] : [],
+    }));
+    const prune = (body: Record<string, unknown>, viaTool = false) =>
+      request(harness.server.port, {
+        method: "POST",
+        path: viaTool
+          ? "/v1/sessions/session-a/tools/profiles"
+          : "/v1/profiles/prune",
+        headers: viaTool ? sessionHeaders(SESSION_A) : leaseHeaders(),
+        body: JSON.stringify(viaTool ? { action: "prune", ...body } : body),
+      });
+
+    const preview = await prune({ min_idle_days: 14 });
+    expect(preview.status).toBe(200);
+    expect(JSON.parse(preview.body)).toMatchObject({ apply: false, candidates: ["probe-a", "probe-b"], removed: [] });
+    expect(harness.manager.pruneProfiles).toHaveBeenLastCalledWith(14, false);
+
+    const applied = await prune({ min_idle_days: 14, apply: true }, true);
+    expect(applied.status).toBe(200);
+    expect(JSON.parse(applied.body).result.removed).toEqual(["probe-a", "probe-b"]);
+    expect(harness.manager.pruneProfiles).toHaveBeenLastCalledWith(14, true);
+
+    const noDays = await prune({ apply: true });
+    expect(noDays.status).toBe(400);
+    expect(JSON.parse(noDays.body).error.message).toContain("min_idle_days");
+    const negative = await prune({ min_idle_days: -1 });
+    expect(negative.status).toBe(400);
+    expect(harness.manager.pruneProfiles).toHaveBeenCalledTimes(2);
   });
 
   it("returns navigation diagnostics and rejects an invalid settle window", async () => {

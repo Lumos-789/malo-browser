@@ -2,12 +2,17 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserSession } from "../../src/main/malo/browser-session";
+import {
+  BrowserSession,
+  type BrowserSessionOptions,
+} from "../../src/main/malo/browser-session";
 
 // vi.mock 的工厂在模块求值时执行，早于测试文件顶层语句，所以假实现放在 vi.hoisted 里
 const fake = vi.hoisted(() => {
   function fakeWebContents() {
+    const handlers = new Map<string, () => void>();
     return {
+      destroyed: false,
       session: {
         setPermissionRequestHandler() {},
         on() {},
@@ -16,7 +21,15 @@ const fake = vi.hoisted(() => {
         webRequest: { onErrorOccurred() {}, onCompleted() {} },
       },
       setWindowOpenHandler() {},
-      on() {},
+      on(event: string, handler: () => void) {
+        handlers.set(event, handler);
+      },
+      emit(event: string) {
+        handlers.get(event)?.();
+      },
+      isDestroyed() {
+        return this.destroyed;
+      },
       async loadURL() {},
       getURL: () => "about:blank",
       getTitle: () => "",
@@ -45,10 +58,17 @@ const fake = vi.hoisted(() => {
     close() {
       this.closed = true;
       this.visible = false;
+      this.view.webContents.destroyed = true;
+      this.view.webContents.emit("destroyed");
     }
     humanClose() {
       this.visible = false;
       this.options.onWindowClosed?.();
+    }
+    /** 页面在会话之外被销毁（例如经 CDP 调试口关掉页面目标） */
+    losePage() {
+      this.view.webContents.destroyed = true;
+      this.view.webContents.emit("destroyed");
     }
   }
 
@@ -91,10 +111,10 @@ const ASSERT_STATE = {
 
 const tmpDirs: string[] = [];
 
-async function newSession(): Promise<BrowserSession> {
+async function newSession(extra: Partial<BrowserSessionOptions> = {}): Promise<BrowserSession> {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "malo-browser-session-"));
   tmpDirs.push(rootDir);
-  const session = await BrowserSession.create({ leaseId: "lease-test", name: "s", rootDir });
+  const session = await BrowserSession.create({ leaseId: "lease-test", name: "s", rootDir, ...extra });
   driverOf().evaluate.mockResolvedValue(ASSERT_STATE);
   return session;
 }
@@ -172,5 +192,63 @@ describe("BrowserSession 窗口状态", () => {
     expect(await session.watch({ show: false })).toMatchObject({ visible: false, window: "hidden" });
     expect(session.summary().visible).toBe(false);
     await session.close();
+  });
+});
+
+describe("BrowserSession 抢前台开关", () => {
+  it("默认拒绝 focus=true：窗口只以不抢焦点的方式出现，login 也一样", async () => {
+    const session = await newSession();
+    const stage = stageOf(session);
+
+    await expect(session.watch({ show: true, focus: true })).rejects.toMatchObject({
+      code: "E_BAD_REQUEST",
+      message: expect.stringContaining("--allow-focus"),
+    });
+    expect(stage.visible).toBe(false);
+    await expect(session.login({ mode: "watch", focus: true })).rejects.toMatchObject({
+      code: "E_BAD_REQUEST",
+      message: expect.stringContaining("--allow-focus"),
+    });
+    // 不带 focus 的请求照常
+    expect(await session.watch({ show: true })).toMatchObject({ focused: false });
+    await session.close();
+  });
+
+  it("daemon 以 --allow-focus 启动时才接受 focus=true", async () => {
+    const session = await newSession({ allowFocus: true });
+    const showForHuman = vi.spyOn(stageOf(session), "showForHuman");
+
+    expect(await session.watch({ show: true, focus: true })).toMatchObject({ focused: true });
+    expect(showForHuman).toHaveBeenLastCalledWith("focused");
+    expect(await session.watch({ show: true })).toMatchObject({ focused: false });
+    expect(showForHuman).toHaveBeenLastCalledWith("inactive");
+    await session.close();
+  });
+});
+
+describe("BrowserSession 页面被外部销毁", () => {
+  it("记一条 page.destroyed、通知管理方，之后的摘要不再抛错，会话仍能正常关掉", async () => {
+    const onPageLost = vi.fn();
+    const session = await newSession({ onPageLost });
+    const stage = stageOf(session);
+
+    stage.losePage();
+
+    expect(session.isPageLost()).toBe(true);
+    expect(onPageLost).toHaveBeenCalledExactlyOnceWith(session);
+    expect(session.eventsAfter(0).map((event) => event.type)).toContain("page.destroyed");
+    expect(session.summary()).toMatchObject({ session_id: session.id, url: "", title: "" });
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(stage.closed).toBe(true);
+  });
+
+  it("自己关会话时页面随之销毁，不算页面丢失", async () => {
+    const onPageLost = vi.fn();
+    const session = await newSession({ onPageLost });
+
+    await session.close();
+
+    expect(onPageLost).not.toHaveBeenCalled();
+    expect(session.isPageLost()).toBe(false);
   });
 });

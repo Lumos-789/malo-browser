@@ -1,9 +1,17 @@
 import path from "node:path";
 import { app, Menu, protocol } from "electron";
-import { isHelpRequested, isVersionRequested, parseOptions, USAGE, type Options } from "./cli";
+import {
+  debugPortFromArgv,
+  isHelpRequested,
+  isVersionRequested,
+  parseOptions,
+  USAGE,
+  type Options,
+} from "./cli";
 import { runPhase0 } from "./phase0";
 import { launchApp } from "./app";
 import { launchMaloDaemon, type MaloDaemon } from "./malo";
+import { installProcessGuards } from "./process-guards";
 import { initDockPresence } from "./windows/dock-presence";
 
 function debug(message: string): void {
@@ -27,12 +35,10 @@ function fatal(error: unknown): void {
   }
 }
 
-process.on("uncaughtException", fatal);
-process.on("unhandledRejection", fatal);
-
 let opts: Options;
 let currentMode: string | null = null;
 let maloDaemon: MaloDaemon | null = null;
+installProcessGuards(process, () => currentMode, fatal);
 if (isHelpRequested(process.argv.slice(1))) {
   console.log(USAGE);
   app.exit(0);
@@ -108,6 +114,11 @@ app.whenReady().then(async () => {
         maxSessionsTotal: opts.maxSessionsTotal,
         artifactTtlHours: opts.artifactTtlHours,
         idleExitMs: opts.idleExitSeconds * 1000,
+        visibleGraceMs: opts.visibleGraceSeconds * 1000,
+        allowFocus: opts.allowFocus,
+        profileCacheIdleHours: opts.profileCacheIdleHours,
+        profileTtlDays: opts.profileTtlDays,
+        debugPort: debugPortFromArgv(process.argv),
         dataDir: opts.dataDir,
         onIdleExit: () => app.exit(0),
       });

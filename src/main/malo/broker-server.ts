@@ -27,6 +27,8 @@ export type BrokerServerOptions = {
   version: string;
   features: string[];
   leaseTtlSeconds: number;
+  /** 没开 CDP 调试口时为 null；写进 /health 让客户端看得见。 */
+  debugPort?: number | null;
   createLease(agentId: string, holderId: string | null): Promise<MaloLease>;
   heartbeat(id: string): LeaseRecord;
   release(id: string): Promise<void>;
@@ -117,6 +119,7 @@ export async function startBrokerServer(options: BrokerServerOptions): Promise<B
         service: "malo-broker",
         version: options.version,
         features: options.features,
+        debug_port: options.debugPort ?? null,
       });
       return;
     }

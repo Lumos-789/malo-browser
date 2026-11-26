@@ -38,7 +38,8 @@ export type MaloProfile = {
 
 export type MaloProfileImportInput = {
   cdp_url: string;
-  domains?: string[];
+  /** 必填：只导入这些域（及其子域）的 cookie。不限定就等于搬走源浏览器的全部登录态。 */
+  domains: string[];
   session_cookie_ttl_days?: number;
 };
 

@@ -42,6 +42,10 @@ export type BrowserSessionOptions = {
   rootDir: string;
   partitionsDir?: string;
   eventLimit?: number;
+  /** 页面在会话之外被销毁（例如经 CDP 调试口关掉页面目标）时回调，由管理方收尾。 */
+  onPageLost?: (session: BrowserSession) => void;
+  /** daemon 是否以 --allow-focus 启动；只有那时 watch/login 的 focus=true 才被接受。 */
+  allowFocus?: boolean;
 };
 
 const MAX_EVENT_LOG = 200;
@@ -141,6 +145,7 @@ export class BrowserSession {
   private readonly consoleErrors: MaloNetworkInfo["console_errors"] = [];
   private navigationState: MaloNavigationDiagnostics | null = null;
   private closed = false;
+  private pageLost = false;
 
   private constructor(private readonly options: BrowserSessionOptions) {
     this.id = options.sessionId ?? `session-${crypto.randomUUID()}`;
@@ -345,6 +350,14 @@ export class BrowserSession {
         this.navigationState.net_error_description = `renderer ${details.reason}`;
       }
     });
+    // 页面可以在会话之外被关掉（典型：经 CDP 调试口关页面目标）。此后这个会话什么都做不了，
+    // 立刻收尾：否则关会话的流程会卡在已销毁的页面上，窗口一直留到进程退出。
+    wc.on("destroyed", () => {
+      if (this.closed) return;
+      this.pageLost = true;
+      this.record("page.destroyed");
+      this.options.onPageLost?.(this);
+    });
     await wc.loadURL("about:blank");
   }
 
@@ -360,6 +373,10 @@ export class BrowserSession {
     return this.closed;
   }
 
+  isPageLost(): boolean {
+    return this.pageLost;
+  }
+
   /**
    * 空闲回收不碰的会话：有操作正在进行，或者窗口正显示给人看
    * （人还在登录/核对，5 分钟没发请求是常态）。
@@ -370,12 +387,13 @@ export class BrowserSession {
 
   summary(): MaloSessionSummary {
     const wc = this.stage.view.webContents;
+    const alive = wc !== undefined && !wc.isDestroyed();
     return {
       session_id: this.id,
       name: this.name,
       profile: this.profile,
-      url: wc.getURL(),
-      title: wc.getTitle(),
+      url: alive ? wc.getURL() : "",
+      title: alive ? wc.getTitle() : "",
       created_at: this.createdAt,
       last_used_at: new Date(this.lastUsedMs).toISOString(),
       visible: this.stage.isVisible(),
@@ -1073,6 +1091,7 @@ export class BrowserSession {
     this.touch();
     const show = input.show !== false;
     const focus = input.focus === true;
+    this.assertFocusAllowed(focus);
     if (input.width !== undefined || input.height !== undefined) {
       const rawWidth = Number(input.width ?? 1440);
       const rawHeight = Number(input.height ?? 900);
@@ -1091,11 +1110,12 @@ export class BrowserSession {
       this.record("watch.hidden");
     }
     const wc = this.stage.view.webContents;
+    const alive = wc !== undefined && !wc.isDestroyed();
     return {
       visible: this.stage.isVisible(),
       focused: focus,
-      url: wc.getURL(),
-      title: wc.getTitle(),
+      url: alive ? wc.getURL() : "",
+      title: alive ? wc.getTitle() : "",
       window: show ? "shown" : "hidden",
     };
   }
@@ -1134,6 +1154,7 @@ export class BrowserSession {
     if (mode === "password" && !hasCredentials) {
       throw new DemoError("E_BAD_REQUEST", "password 模式需要 username 和 password");
     }
+    this.assertFocusAllowed(input.focus === true);
     const rawTimeout = Number(input.timeout_ms ?? (mode === "watch" ? 180_000 : 30_000));
     if (!Number.isFinite(rawTimeout) || rawTimeout < 1_000 || rawTimeout > 600_000) {
       throw new DemoError("E_BAD_REQUEST", "login.timeout_ms 必须是 1000-600000 的毫秒数");
@@ -1467,9 +1488,10 @@ export class BrowserSession {
 
   private fallbackObservation(): MaloLightObservation {
     const wc = this.stage.view.webContents;
+    const alive = wc !== undefined && !wc.isDestroyed();
     return {
-      url: wc.getURL(),
-      title: wc.getTitle(),
+      url: alive ? wc.getURL() : "",
+      title: alive ? wc.getTitle() : "",
       ready_state: "loading",
       loading: true,
       viewport: { width: 0, height: 0, dpr: 1 },
@@ -1776,7 +1798,7 @@ export class BrowserSession {
     this.detachHooks?.();
     this.detachHooks = null;
     const wc = this.stage.view.webContents;
-    if (this.profile === null) {
+    if (this.profile === null && wc !== undefined && !wc.isDestroyed()) {
       try {
         await wc.session.clearStorageData();
         await wc.session.clearCache();
@@ -1829,5 +1851,15 @@ export class BrowserSession {
 
   private assertOpen(): void {
     if (this.closed) throw new DemoError("E_SESSION_NOT_FOUND", `session 已关闭：${this.id}`);
+  }
+
+  /** 把窗口带到前台会打断人正在做的事：daemon 不核实得了人是否同意，所以默认只给不抢焦点的方式。 */
+  private assertFocusAllowed(focus: boolean): void {
+    if (!focus || this.options.allowFocus === true) return;
+    throw new DemoError(
+      "E_BAD_REQUEST",
+      "focus=true 被拒绝：daemon 需要以 --allow-focus 启动才接受它。" +
+        "窗口默认只以不抢焦点的方式出现，需要前台请人自己点窗口或 Dock 图标",
+    );
   }
 }

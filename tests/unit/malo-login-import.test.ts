@@ -41,9 +41,8 @@ describe("validateCdpUrl", () => {
 });
 
 describe("matchesDomains", () => {
-  it("无过滤时全过", () => {
-    expect(matchesDomains("anything.com", undefined)).toBe(true);
-    expect(matchesDomains("anything.com", [])).toBe(true);
+  it("空的域清单不匹配任何 cookie：导入范围必须显式给出", () => {
+    expect(matchesDomains("anything.com", [])).toBe(false);
   });
 
   it("精确与子域双向匹配", () => {
@@ -219,7 +218,7 @@ describe("importLoginState：源端点帧处理", () => {
     sourceClosers.push(source.close);
     const set = vi.fn(async () => undefined);
     const partition = { cookies: { set } } as unknown as Session;
-    const result = await importLoginState(partition, { cdp_url: source.httpUrl });
+    const result = await importLoginState(partition, { cdp_url: source.httpUrl, domains: ["example.com"] });
     expect(result.cookies_total).toBe(1);
     expect(result.cookies_matched).toBe(1);
     expect(result.cookies_written).toBe(1);
@@ -229,7 +228,7 @@ describe("importLoginState：源端点帧处理", () => {
   it("非 JSON 文本帧：本次 import 以 502 码拒绝，进程存活", async () => {
     const source = await startCdpSource({ frames: [{ payload: "not-json{{" }] });
     sourceClosers.push(source.close);
-    await expect(importLoginState(NO_PARTITION, { cdp_url: source.httpUrl })).rejects.toMatchObject({
+    await expect(importLoginState(NO_PARTITION, { cdp_url: source.httpUrl, domains: ["example.com"] })).rejects.toMatchObject({
       code: "E_IMPORT_SOURCE_UNREACHABLE",
       message: expect.stringContaining("帧无法解析"),
     });
@@ -240,7 +239,7 @@ describe("importLoginState：源端点帧处理", () => {
       frames: [{ binary: true, payload: Buffer.from([0x00, 0x01, 0x02, 0xff]) }],
     });
     sourceClosers.push(source.close);
-    await expect(importLoginState(NO_PARTITION, { cdp_url: source.httpUrl })).rejects.toMatchObject({
+    await expect(importLoginState(NO_PARTITION, { cdp_url: source.httpUrl, domains: ["example.com"] })).rejects.toMatchObject({
       code: "E_IMPORT_SOURCE_UNREACHABLE",
       message: expect.stringContaining("帧无法解析"),
     });
@@ -251,7 +250,7 @@ describe("importLoginState：源端点帧处理", () => {
       webSocketDebuggerUrl: "ws://192.168.1.5:9222/devtools/browser/test",
     });
     sourceClosers.push(source.close);
-    await expect(importLoginState(NO_PARTITION, { cdp_url: source.httpUrl })).rejects.toMatchObject({
+    await expect(importLoginState(NO_PARTITION, { cdp_url: source.httpUrl, domains: ["example.com"] })).rejects.toMatchObject({
       code: "E_BAD_REQUEST",
       message: expect.stringContaining("webSocketDebuggerUrl 只允许回环地址"),
     });

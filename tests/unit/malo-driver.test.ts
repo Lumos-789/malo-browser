@@ -33,6 +33,7 @@ function fakeContents() {
     redo: vi.fn(),
     getURL: () => "http://127.0.0.1/",
     isLoading: () => false,
+    isDestroyed: () => false,
     loadURL: vi.fn(async () => undefined),
     setWindowOpenHandler: vi.fn(),
     on: vi.fn(),
@@ -188,5 +189,16 @@ describe("ElectronPageDriver drag", () => {
     expect(calls[2]).toMatchObject({ x: 125, y: 50, button: "left", buttons: 1 });
     expect(calls[calls.length - 2]).toMatchObject({ x: 200, y: 50, buttons: 1 });
     expect(calls[calls.length - 1]).toMatchObject({ x: 200, y: 50, button: "left", buttons: 0, clickCount: 1 });
+  });
+});
+
+describe("ElectronPageDriver detach", () => {
+  it("页面已被销毁时直接返回，不再去碰调试器", () => {
+    const wc = { ...fakeContents(), isDestroyed: () => true };
+    const driver = new ElectronPageDriver(wc as never);
+
+    expect(() => driver.detach()).not.toThrow();
+    expect(wc.debugger.off).not.toHaveBeenCalled();
+    expect(wc.debugger.detach).not.toHaveBeenCalled();
   });
 });

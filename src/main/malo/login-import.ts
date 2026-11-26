@@ -59,8 +59,7 @@ function domainMatches(cookieDomain: string, wanted: string): boolean {
   return cd === w || cd.endsWith(`.${w}`) || w.endsWith(`.${cd}`);
 }
 
-export function matchesDomains(domain: string, domains?: string[]): boolean {
-  if (!domains || domains.length === 0) return true;
+export function matchesDomains(domain: string, domains: string[]): boolean {
   return domains.some((wanted) => domainMatches(domain, wanted));
 }
 
@@ -213,7 +212,7 @@ export async function importLoginState(
   const all = await fetchCdpCookies(input.cdp_url);
   const matched = all.filter((cookie) => matchesDomains(cookie.domain, input.domains));
   if (matched.length === 0) {
-    const scope = input.domains?.length ? `（域过滤 ${input.domains.join(", ")}）` : "";
+    const scope = `（域过滤 ${input.domains.join(", ")}）`;
     throw new DemoError(
       "E_IMPORT_EMPTY",
       `源 CDP ${input.cdp_url} 共 ${all.length} 条 cookie，域过滤后 0 条${scope}——源浏览器没有可导入的登录态`,

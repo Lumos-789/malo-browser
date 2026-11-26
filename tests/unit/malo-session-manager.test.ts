@@ -33,6 +33,7 @@ function fakeSession(profile: string | null, pinned = false): BrowserSession {
     summary: () => ({ session_id: id, name: id, visible: false }),
     close: vi.fn(async () => undefined),
     isClosed: () => false,
+    isPageLost: () => false,
     isPinned: () => pinned,
     idleMs: () => 0,
     downloadsDir: `/tmp/${id}/downloads`,
@@ -184,6 +185,120 @@ describe("clearProfile 与并发 create 的互斥", () => {
     await expect(
       access(path.join(partitionsDir, "malo-profile-alpha")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("跨 lease 共用一份 ProfileStore：另一个 lease 里进行中的 create 同样挡住 clear", async () => {
+    const { dir, profiles, partitionsDir } = await harness();
+    const mk = (leaseId: string) =>
+      new SessionManager({
+        leaseId,
+        rootDir: path.join(dir, leaseId),
+        maxSessions: 4,
+        profiles,
+        partitionsDir,
+      });
+    const leaseA = mk("lease-a");
+    const leaseB = mk("lease-b");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(BrowserSession.create).mockImplementationOnce(async () => {
+      await gate;
+      return fakeSession("alpha");
+    });
+
+    const creating = leaseA.create({ profile: "alpha" });
+    await vi.waitFor(() => expect(BrowserSession.create).toHaveBeenCalled());
+    await expect(leaseB.clearProfile("alpha")).rejects.toMatchObject({ code: "E_PROFILE_LOCKED" });
+
+    release();
+    await creating;
+  });
+
+  it("分区目录删不干净时 clear 报 E_PROFILE_CLEAR_FAILED，登记保留、不留下孤儿分区", async () => {
+    const { manager, profiles, partitionsDir } = await harness("alpha");
+    const { chmod } = await import("node:fs/promises");
+    await chmod(partitionsDir, 0o500);
+    try {
+      await expect(manager.clearProfile("alpha")).rejects.toMatchObject({
+        code: "E_PROFILE_CLEAR_FAILED",
+        message: expect.stringContaining("alpha"),
+      });
+    } finally {
+      await chmod(partitionsDir, 0o700);
+    }
+    expect(await profiles.exists("alpha")).toBe(true);
+  });
+
+  it("prune 默认只预览；apply=true 才删，且跳过正被占用的 profile", async () => {
+    const { manager, profiles, partitionsDir } = await harness("alpha");
+    vi.mocked(BrowserSession.create).mockImplementationOnce(async () => fakeSession("beta"));
+    await manager.create({ profile: "beta" });
+
+    const preview = await manager.pruneProfiles(14, false);
+    expect(preview).toEqual({
+      min_idle_days: 14,
+      apply: false,
+      // alpha 的最后使用时间是 2026-01-01，早已闲置；beta 刚被占用
+      candidates: ["alpha"],
+      removed: [],
+    });
+    expect(await profiles.exists("alpha")).toBe(true);
+
+    const applied = await manager.pruneProfiles(14, true);
+    expect(applied.removed).toEqual(["alpha"]);
+    expect(await profiles.exists("alpha")).toBe(false);
+    await expect(
+      access(path.join(partitionsDir, "malo-profile-alpha")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await profiles.exists("beta")).toBe(true);
+    expect(profiles.activeCount("beta")).toBe(1);
+
+    await expect(manager.pruneProfiles(-1, false)).rejects.toMatchObject({ code: "E_BAD_REQUEST" });
+  });
+});
+
+describe("页面被外部销毁", () => {
+  it("会话自行收尾并归还名额，之后访问 404 且说清原因", async () => {
+    const budget = new SessionBudget(4);
+    const { manager } = await harness(undefined, budget);
+    const session = fakeSession(null);
+    vi.mocked(BrowserSession.create).mockResolvedValueOnce(session);
+    const created = await manager.create({});
+    expect(budget.count).toBe(1);
+    const createOptions = vi.mocked(BrowserSession.create).mock.calls[0][0];
+
+    createOptions.onPageLost?.(session);
+
+    await vi.waitFor(() => expect(session.close).toHaveBeenCalledOnce());
+    expect(budget.count).toBe(0);
+    expect(manager.list()).toEqual([]);
+    expect(() => manager.get(created.session_id)).toThrow(
+      expect.objectContaining({
+        code: "E_SESSION_NOT_FOUND",
+        message: expect.stringContaining("页面被外部关闭"),
+      }),
+    );
+    // 调用方随后正常来关它：同样 404 带原因，不会抛出别的错
+    await expect(manager.close(created.session_id)).rejects.toMatchObject({
+      code: "E_SESSION_NOT_FOUND",
+    });
+  });
+
+  it("创建期间页面就没了：建会话直接失败，名额归还", async () => {
+    const budget = new SessionBudget(4);
+    const { manager } = await harness(undefined, budget);
+    const session = { ...fakeSession(null), isPageLost: () => true };
+    vi.mocked(BrowserSession.create).mockResolvedValueOnce(session as unknown as BrowserSession);
+
+    await expect(manager.create({})).rejects.toMatchObject({
+      code: "E_SESSION_NOT_FOUND",
+      message: expect.stringContaining("创建期间页面被销毁"),
+    });
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(budget.count).toBe(0);
+    expect(manager.list()).toEqual([]);
   });
 });
 

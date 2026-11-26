@@ -82,8 +82,18 @@ export class StageWindow {
     return window;
   }
 
+  private pageAlive(): boolean {
+    const wc = this.view.webContents;
+    return wc !== undefined && !wc.isDestroyed();
+  }
+
   private readonly onClosed = (): void => {
     if (this.closing || !this.options.onWindowClosed) return;
+    // 页面已经不在（被外部销毁）：没有东西可以换窗续活，按关窗处理
+    if (!this.pageAlive()) {
+      this.closing = true;
+      return;
+    }
     this.host = this.createWindow();
     this.placed = false;
     this.layout();
@@ -92,6 +102,7 @@ export class StageWindow {
 
   private ensureWindow(): BaseWindow {
     if (!this.host.isDestroyed()) return this.host;
+    if (!this.pageAlive()) throw new Error("stage 的页面已销毁，无法再创建窗口托管它");
     this.host = this.createWindow();
     this.layout();
     return this.host;
@@ -184,6 +195,9 @@ export class StageWindow {
     dockPresenceHidden(this.host);
     this.bar?.destroy();
     this.bar = null;
+    // 窗口关掉不会带走页面：视图还挂着渲染进程，必须显式关掉，否则活到进程退出
+    const wc = this.view.webContents;
+    if (wc !== undefined && !wc.isDestroyed()) wc.close();
     if (!this.host.isDestroyed()) this.host.destroy();
   }
 }

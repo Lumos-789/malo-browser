@@ -74,6 +74,8 @@ export class ElectronPageDriver implements PageDriver {
   }
 
   detach(): void {
+    // 页面已被销毁（例如经 CDP 调试口关掉了页面目标）时调试器随页面一起没了，无事可做
+    if (this.wc.isDestroyed()) return;
     this.wc.debugger.off("message", this.onDebuggerMessage);
     if (this.wc.debugger.isAttached()) this.wc.debugger.detach();
   }

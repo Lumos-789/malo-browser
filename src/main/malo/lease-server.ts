@@ -31,6 +31,8 @@ export type LeaseServerOptions = {
   /** 握手信息，写进 /health。 */
   version: string;
   features: string[];
+  /** 没开 CDP 调试口时为 null；写进 /health。 */
+  debugPort?: number | null;
   /**
    * 收到任何已鉴权请求时调用，用于给租约续期。
    * 语义：有活动就不该过期——否则长批任务跑到 TTL 就到点，端口被收走。
@@ -124,6 +126,7 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
         service: "malo-lease",
         version: options.version,
         features: options.features,
+        debug_port: options.debugPort ?? null,
       });
       return;
     }
@@ -171,6 +174,11 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
       return;
     }
     const profileMatch = /^\/v1\/profiles\/([^/]+)$/.exec(url.pathname);
+    if (url.pathname === "/v1/profiles/prune" && req.method === "POST") {
+      const body = await readJsonObject(req);
+      sendJson(res, 200, await options.manager.pruneProfiles(readIdleDays(body), body.apply === true));
+      return;
+    }
     if (profileMatch && req.method === "DELETE") {
       const name = decodeURIComponent(profileMatch[1]);
       sendJson(res, 200, await options.manager.clearProfile(name));
@@ -182,17 +190,8 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
       if (typeof body.cdp_url !== "string" || body.cdp_url.trim() === "") {
         throw new BadRequest("cdp_url 必须是非空字符串（源 Chrome 的 CDP 端点，如 http://127.0.0.1:9223）");
       }
-      let domains: string[] | undefined;
-      if (body.domains !== undefined) {
-        if (!Array.isArray(body.domains) || body.domains.length === 0) {
-          throw new BadRequest("domains 必须是非空字符串数组");
-        }
-        const invalid = body.domains.find((domain) => typeof domain !== "string" || domain === "");
-        if (invalid !== undefined) {
-          throw new BadRequest(`domains 条目必须是非空字符串，非法项: ${JSON.stringify(invalid)}`);
-        }
-        domains = body.domains as string[];
-      }
+      // domains 是必填：不填等于把源浏览器里所有站点的登录态整包搬进来，这不该是一个默认值
+      const domains = readDomains(body.domains);
       const ttlDays =
         body.session_cookie_ttl_days === undefined ? 180 : Number(body.session_cookie_ttl_days);
       if (!Number.isFinite(ttlDays) || ttlDays < 0 || ttlDays > 3650) {
@@ -242,7 +241,15 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
           sendJson(res, 200, { tool, result: await options.manager.clearProfile(body.name) });
           return;
         }
-        throw new BadRequest("profiles.action 只能是 list 或 clear");
+        if (action === "prune") {
+          sendJson(
+            res,
+            200,
+            { tool, result: await options.manager.pruneProfiles(readIdleDays(body), body.apply === true) },
+          );
+          return;
+        }
+        throw new BadRequest("profiles.action 只能是 list、clear 或 prune");
       }
       try {
         sendJson(res, 200, await invokeMaloTool(tool, body, session));
@@ -385,6 +392,30 @@ function readOptionalDimension(value: unknown, field: string): number | undefine
     throw new BadRequest(`${field} 必须是 64-3840 的整数`);
   }
   return number;
+}
+
+function readDomains(raw: unknown): string[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new BadRequest(
+      "domains 必填：要导入的域，非空字符串数组（如 [\"example.com\"]）；不填等于导入源浏览器的全部登录态",
+    );
+  }
+  const invalid = raw.find((domain) => typeof domain !== "string" || domain.trim() === "");
+  if (invalid !== undefined) {
+    throw new BadRequest(`domains 条目必须是非空字符串，非法项: ${JSON.stringify(invalid)}`);
+  }
+  return (raw as string[]).map((domain) => domain.trim());
+}
+
+function readIdleDays(body: Record<string, unknown>): number {
+  if (body.min_idle_days === undefined) {
+    throw new BadRequest("prune 需要 min_idle_days：多少天没用过的 profile 算候选");
+  }
+  const days = Number(body.min_idle_days);
+  if (!Number.isFinite(days) || days < 0) {
+    throw new BadRequest("min_idle_days 必须是非负数");
+  }
+  return days;
 }
 
 function readOptionalTimeout(value: unknown, fallback: number): number {

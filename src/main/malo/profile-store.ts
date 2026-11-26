@@ -4,7 +4,7 @@ import { DemoError } from "../../shared/errors";
 import type { MaloProfile } from "../../shared/malo";
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-const MAX_PROFILES = 64;
+const MAX_PROFILES = 256;
 
 type ProfileRecord = {
   created_at: string;
@@ -39,16 +39,21 @@ export function partitionDirName(partition: string): string {
   return partition.startsWith("persist:") ? partition.slice("persist:".length) : partition;
 }
 
+/** 删掉整个 partition 目录。失败必须抛出去：调用方据此决定要不要删登记，不能报出假的清理成功。 */
 export async function removePartitionDir(partitionsDir: string, partition: string): Promise<void> {
-  try {
-    await rm(path.join(partitionsDir, partitionDirName(partition)), { recursive: true, force: true });
-  } catch (error) {
-    console.error(`[malo] 清理 partition 目录失败：${(error as Error).message}`);
-  }
+  await rm(path.join(partitionsDir, partitionDirName(partition)), {
+    recursive: true,
+    force: true,
+  });
 }
 
 export class ProfileStore {
   private readonly active = new Map<string, number>();
+  // 进行中的 create：clearProfile / prune 的占用检查要看得见它们，否则会把新 session 脚下的分区清掉
+  private readonly pending = new Map<string, number>();
+  // 同名 profile 的关键段串行链。全 daemon 一份：各 lease 的 SessionManager 共用同一个 store，
+  // 跨 lease 并发清理/创建同名 profile 也必须互斥。
+  private readonly locks = new Map<string, Promise<void>>();
   private data: ProfileFile = { version: 1, profiles: {} };
   private loaded = false;
   private writeChain: Promise<void> = Promise.resolve();
@@ -68,7 +73,16 @@ export class ProfileStore {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
-    const parsed = JSON.parse(raw) as Partial<ProfileFile>;
+    let parsed: Partial<ProfileFile>;
+    try {
+      parsed = JSON.parse(raw) as Partial<ProfileFile>;
+    } catch (error) {
+      // 登记文件坏了不能当「没有 profile」启动：分区目录还在，带着一份空登记跑起来会四处对不上
+      throw new Error(
+        `profile 登记文件损坏：${this.file}（${(error as Error).message}）。` +
+          `请把它改名备份后重启；对应的分区目录在 ${path.dirname(path.dirname(this.file))}/chromium/Partitions/ 下不受影响`,
+      );
+    }
     const profiles = parsed.profiles ?? {};
     for (const [name, record] of Object.entries(profiles)) {
       if (!NAME_PATTERN.test(name)) continue;
@@ -91,6 +105,13 @@ export class ProfileStore {
   async exists(name: string): Promise<boolean> {
     await this.load();
     return this.data.profiles[name] !== undefined;
+  }
+
+  lastUsedAtMs(name: string): number | undefined {
+    const record = this.data.profiles[name];
+    if (!record) return undefined;
+    const parsed = Date.parse(record.last_used_at);
+    return Number.isFinite(parsed) ? parsed : undefined;
   }
 
   async touch(name: string): Promise<MaloProfile> {
@@ -117,6 +138,22 @@ export class ProfileStore {
     return true;
   }
 
+  /** 超过 minIdleDays 没用过、且此刻没人用的 profile。只算不删，删不删由调用方决定。 */
+  idleProfiles(minIdleDays: number, nowMs = Date.now()): string[] {
+    const cutoff = nowMs - minIdleDays * 86_400_000;
+    return Object.keys(this.data.profiles)
+      .sort()
+      .filter((name) => {
+        const lastUsed = this.lastUsedAtMs(name);
+        return (
+          lastUsed !== undefined &&
+          lastUsed <= cutoff &&
+          this.active.get(name) === undefined &&
+          this.pending.get(name) === undefined
+        );
+      });
+  }
+
   registerActive(name: string): void {
     this.active.set(name, (this.active.get(name) ?? 0) + 1);
   }
@@ -129,6 +166,35 @@ export class ProfileStore {
 
   activeCount(name: string): number {
     return this.active.get(name) ?? 0;
+  }
+
+  addPending(name: string): void {
+    this.pending.set(name, (this.pending.get(name) ?? 0) + 1);
+  }
+
+  releasePending(name: string): void {
+    const next = (this.pending.get(name) ?? 0) - 1;
+    if (next > 0) this.pending.set(name, next);
+    else this.pending.delete(name);
+  }
+
+  /** 活跃会话数 + 进行中的创建数：占用检查统一看这个。 */
+  inUseCount(name: string): number {
+    return this.activeCount(name) + (this.pending.get(name) ?? 0);
+  }
+
+  /** 同名 profile 的关键段串行执行；前一段无论成败，后一段都接着跑。 */
+  async withProfileLock<T>(name: string, critical: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(name) ?? Promise.resolve();
+    const result = previous.then(critical);
+    this.locks.set(
+      name,
+      result.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return result;
   }
 
   private toProfile(name: string): MaloProfile {

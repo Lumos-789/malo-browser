@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DemoError } from "../../src/shared/errors";
 import {
   ProfileStore,
@@ -98,5 +98,101 @@ describe("profile store write recovery", () => {
     const reloaded = new ProfileStore(file);
     expect((await reloaded.list()).map((item) => item.name)).toEqual(["work"]);
     await rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe("profile store lifecycle helpers", () => {
+  async function seeded(lastUsed: Record<string, string>) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "malo-profile-idle-"));
+    const file = path.join(dir, "profiles.json");
+    const profiles = Object.fromEntries(
+      Object.entries(lastUsed).map(([name, last_used_at]) => [
+        name,
+        { created_at: last_used_at, last_used_at, sessions: 1 },
+      ]),
+    );
+    await writeFile(file, JSON.stringify({ version: 1, profiles }));
+    const store = new ProfileStore(file);
+    await store.load();
+    return { store, dir };
+  }
+
+  it("lists profiles idle for the given number of days that nobody is using", async () => {
+    const NOW = Date.parse("2026-11-26T00:00:00.000Z");
+    const DAY = 86_400_000;
+    const { store, dir } = await seeded({
+      old: new Date(NOW - 40 * DAY).toISOString(),
+      edge: new Date(NOW - 30 * DAY).toISOString(),
+      recent: new Date(NOW - 3 * DAY).toISOString(),
+    });
+    store.registerActive("old");
+    store.addPending("edge");
+
+    expect(store.idleProfiles(30, NOW)).toEqual([]);
+    store.releaseActive("old");
+    store.releasePending("edge");
+    expect(store.idleProfiles(30, NOW)).toEqual(["edge", "old"]);
+    expect(store.idleProfiles(60, NOW)).toEqual([]);
+    expect(store.lastUsedAtMs("old")).toBe(NOW - 40 * DAY);
+    expect(store.lastUsedAtMs("missing")).toBeUndefined();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("counts sessions still being created as in use", async () => {
+    const { store } = await tempStore();
+    expect(store.inUseCount("work")).toBe(0);
+    store.addPending("work");
+    expect(store.inUseCount("work")).toBe(1);
+    store.registerActive("work");
+    expect(store.inUseCount("work")).toBe(2);
+    store.releasePending("work");
+    expect(store.inUseCount("work")).toBe(1);
+    store.releaseActive("work");
+    expect(store.inUseCount("work")).toBe(0);
+  });
+
+  it("runs same-name critical sections one at a time and does not let a failure block the next", async () => {
+    const { store } = await tempStore();
+    const order: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const failing = store.withProfileLock("work", async () => {
+      order.push("failing-start");
+      await gate;
+      throw new Error("clear blew up");
+    });
+    const queued = store.withProfileLock("work", async () => {
+      order.push("queued");
+    });
+    const elsewhere = store.withProfileLock("play", async () => {
+      order.push("elsewhere");
+    });
+    await vi.waitFor(() => expect(order).toEqual(["failing-start", "elsewhere"]));
+
+    release();
+    await expect(failing).rejects.toThrow("clear blew up");
+    await Promise.all([queued, elsewhere]);
+
+    expect(order).toEqual(["failing-start", "elsewhere", "queued"]);
+  });
+
+  it("fails loudly on a corrupt registry file instead of starting with zero profiles", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "malo-profile-corrupt-"));
+    const file = path.join(dir, "profiles.json");
+    await writeFile(file, "{ not json");
+    const store = new ProfileStore(file);
+
+    await expect(store.load()).rejects.toThrow(/登记文件损坏/);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("keeps room for 256 profiles", async () => {
+    const { store } = await tempStore();
+    for (let index = 0; index < 256; index += 1) {
+      await store.touch(`p${index}`);
+    }
+    await expect(store.touch("one-too-many")).rejects.toMatchObject({ code: "E_RESOURCE_LIMIT" });
   });
 });

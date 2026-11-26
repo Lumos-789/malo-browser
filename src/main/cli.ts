@@ -32,6 +32,14 @@ export type Options = {
   maxSessionsTotal: number;
   artifactTtlHours: number;
   idleExitSeconds: number;
+  /** 窗口显示给人的会话所属租约，客户端多久没活动就照常回收；0 = 不宽限。 */
+  visibleGraceSeconds: number;
+  /** 允许 watch/login 以 focus=true 把窗口带到前台；默认关。 */
+  allowFocus: boolean;
+  /** 启动时清掉多久没用过的 profile 的网页缓存；0 = 不清。 */
+  profileCacheIdleHours: number;
+  /** 启动时删掉多久没用过的 profile（连同登录态）；0 = 不删。 */
+  profileTtlDays: number;
   dataDir: string;
   proxyServer: string | null;
 };
@@ -68,6 +76,10 @@ export const KNOWN_FLAGS: readonly string[] = [
   "max-sessions-total",
   "artifact-ttl-hours",
   "idle-exit-seconds",
+  "visible-grace-seconds",
+  "allow-focus",
+  "profile-cache-idle-hours",
+  "profile-ttl-days",
   "data-dir",
   "proxy-server",
   "help",
@@ -114,6 +126,10 @@ export const USAGE = `Malo Browser — 演示用浏览器
   --max-sessions-total=<n>   整个 daemon 的 session 总上限，默认 64
   --artifact-ttl-hours=<n>   租约目录（下载/失败截图/run report）保留小时数，默认 168；0=启动时不清理
   --idle-exit-seconds=<n>    无租约且无请求这么久就退出，默认 1800；0=不退出
+  --visible-grace-seconds=<n> 窗口显示给人的会话所属租约，客户端多久没活动就照常回收，默认 1800；0=不宽限
+  --allow-focus=true         允许 watch/login 的 focus=true 把窗口带到前台（默认拒绝：窗口只以不抢焦点的方式出现）
+  --profile-cache-idle-hours=<n> 启动时清掉多久没用过的 profile 的网页缓存，默认 72；0=不清
+  --profile-ttl-days=<n>     启动时删掉多久没用过的 profile（连同登录态），默认 0=不删
   --data-dir=<dir>           malo-browser 数据目录，默认 ~/.malo-browser
   --proxy-server=<url>       Chromium 代理（如 http://127.0.0.1:7890），浏览器级，所有 session 生效
 
@@ -214,6 +230,15 @@ export function expandHome(input: string): string {
   return input;
 }
 
+/** daemon 是否带着 Chromium 的 CDP 调试口启动。这个口没有鉴权，要写进握手让客户端看得见。 */
+export function debugPortFromArgv(argv: string[]): number | null {
+  for (const arg of argv) {
+    const match = /^--remote-debugging-port=(\d+)$/.exec(arg);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
 export function parseOptions(argv: string[]): Options {
   validateFlags(argv);
   const mode = (readFlag(argv, "mode") ?? "stage") as Mode;
@@ -273,6 +298,10 @@ export function parseOptions(argv: string[]): Options {
     maxSessionsTotal,
     artifactTtlHours: readNonNegativeInteger(argv, "artifact-ttl-hours", 168, 87_600),
     idleExitSeconds: readNonNegativeInteger(argv, "idle-exit-seconds", 1800, 86_400),
+    visibleGraceSeconds: readNonNegativeInteger(argv, "visible-grace-seconds", 1800, 86_400),
+    allowFocus: readFlag(argv, "allow-focus") === "true",
+    profileCacheIdleHours: readNonNegativeInteger(argv, "profile-cache-idle-hours", 72, 87_600),
+    profileTtlDays: readNonNegativeInteger(argv, "profile-ttl-days", 0, 3650),
     dataDir: path.resolve(expandHome(readFlag(argv, "data-dir") ?? path.join(os.homedir(), ".malo-browser"))),
     proxyServer: readFlag(argv, "proxy-server") ?? null,
   };

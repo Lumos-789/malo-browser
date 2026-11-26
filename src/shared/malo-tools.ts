@@ -363,7 +363,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
   {
     name: "watch",
     description:
-      "Show or hide the session window for a human. Defaults to an inactive window that does not steal focus; use focus=true only when the human explicitly needs the foreground.",
+      "Show or hide the session window for a human. The window appears inactive and never steals focus. focus=true is refused unless the daemon runs with --allow-focus; a human who wants the window in front clicks it or its Dock icon.",
     input_schema: {
       type: "object",
       properties: {
@@ -395,7 +395,7 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
         focus: {
           type: "boolean",
           default: false,
-          description: "Only used in watch mode; true may take the foreground.",
+          description: "Only used in watch mode; refused unless the daemon runs with --allow-focus.",
         },
         keep_visible: {
           type: "boolean",
@@ -409,12 +409,22 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
   {
     name: "profiles",
     description:
-      "List or clear persistent login profiles. A profile keeps cookies and storage across sessions and daemon restarts; clearing a profile that still has live sessions is refused.",
+      "List, preview or clear persistent login profiles. A profile keeps cookies and storage across sessions and daemon restarts. prune returns the profiles not used for at least min_idle_days (dry run unless apply=true). Clearing or pruning a profile that still has live sessions is refused.",
     input_schema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["list", "clear"], default: "list" },
+        action: { type: "string", enum: ["list", "clear", "prune"], default: "list" },
         name: { type: "string", description: "Required when action=clear." },
+        min_idle_days: {
+          type: "number",
+          minimum: 0,
+          description: "Required when action=prune: profiles unused for at least this many days are candidates.",
+        },
+        apply: {
+          type: "boolean",
+          default: false,
+          description: "prune only: true deletes the candidates, false only lists them.",
+        },
       },
       additionalProperties: false,
     },

@@ -87,7 +87,7 @@ const fake = vi.hoisted(() => {
   class FakeView {
     static instances: FakeView[] = [];
     bounds: Bounds | null = null;
-    readonly webContents = {};
+    readonly webContents: FakePage = new FakePage();
 
     constructor() {
       FakeView.instances.push(this);
@@ -98,9 +98,20 @@ const fake = vi.hoisted(() => {
     }
   }
 
-  const toolbars: FakeToolbar[] = [];
-  const workArea = { x: 0, y: 25, width: 1512, height: 900 };
-  return { FakeWindow, FakeView, toolbars, workArea };
+  class FakePage {
+    destroyed = false;
+
+    isDestroyed() {
+      return this.destroyed;
+    }
+
+    close() {
+      this.destroyed = true;
+    }
+  }
+
+  const toolbars: FakeToolbar[] = [];  const workArea = { x: 0, y: 25, width: 1512, height: 900 };
+  return { FakeWindow, FakeView, FakePage, toolbars, workArea };
 });
 
 vi.mock("electron", () => ({
@@ -134,6 +145,7 @@ vi.mock("../../src/main/windows/dock-presence", () => ({
 
 type FakeWindow = InstanceType<typeof fake.FakeWindow>;
 type FakeView = InstanceType<typeof fake.FakeView>;
+type FakePage = InstanceType<typeof fake.FakePage>;
 const windowOf = (stage: StageWindow) => stage.window as unknown as FakeWindow;
 const viewOf = (view: unknown) => view as unknown as FakeView;
 const toolbarOf = (stage: StageWindow) => stage.toolbar as unknown as FakeToolbar;
@@ -254,5 +266,39 @@ describe("StageWindow window lifecycle", () => {
     expect(stage.toolbar).not.toBeNull();
     expect(window.getContentBounds()).toEqual({ width: 900, height: 644 });
     expect(window.shownInactive).toBe(1);
+  });
+
+  it("destroys the page with the stage so its renderer does not outlive the session", () => {
+    const stage = hiddenStage();
+    const page = viewOf(stage.view).webContents as FakePage;
+
+    stage.close();
+
+    expect(page.destroyed).toBe(true);
+  });
+
+  it("does not re-host a page that was destroyed underneath the window", () => {
+    const onWindowClosed = vi.fn();
+    const stage = hiddenStage(onWindowClosed);
+    stage.showForHuman("inactive");
+    const window = windowOf(stage);
+    const page = viewOf(stage.view).webContents as FakePage;
+
+    page.close();
+    window.close();
+
+    expect(onWindowClosed).not.toHaveBeenCalled();
+    expect(fake.FakeWindow.instances).toHaveLength(1);
+    expect(window.isDestroyed()).toBe(true);
+    expect(() => stage.showForHuman("inactive")).toThrow("页面已销毁");
+  });
+
+  it("closing a stage whose page is already gone stays a no-op for the page", () => {
+    const stage = hiddenStage();
+    const page = viewOf(stage.view).webContents as FakePage;
+    page.close();
+
+    expect(() => stage.close()).not.toThrow();
+    expect(windowOf(stage).isDestroyed()).toBe(true);
   });
 });
