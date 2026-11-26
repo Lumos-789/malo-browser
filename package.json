@@ -64,6 +64,7 @@
     "smoke:toolbar": "npm run build && electron scripts/toolbar-smoke.mjs",
     "smoke:control": "node scripts/control-smoke.mjs",
     "test": "vitest run",
+    "test:client": "python3 -m unittest discover -s tests/python",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json",
     "stage": "npm run build && electron . --mode=stage",
     "record": "npm run build && electron . --mode=record",
