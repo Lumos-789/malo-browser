@@ -133,9 +133,53 @@ async function runSmoke(brokerFile) {
     </body>
   </html>`;
 
+  // 工具层实验页：固定侧栏（自己的滚动条，用来验证滚轮落点）、role 组件、记录按键的输入框、开新窗口的链接
+  const LAB_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>lab</title><style>
+    html, body { margin: 0; height: 100%; }
+    #side { position: fixed; left: 0; top: 0; width: 180px; height: 100%; overflow-y: auto; background: #eef; }
+    #main { margin-left: 200px; height: 3200px; position: relative; }
+    #scroller { position: absolute; left: 240px; top: 40px; width: 200px; height: 120px; overflow-y: auto; border: 1px solid #ccc; }
+    #scroller > div { height: 1200px; }
+    [role="tab"] { display: inline-block; padding: 4px 10px; cursor: pointer; }
+  </style></head><body>
+    <aside id="side"><div style="height: 2400px">side</div></aside>
+    <main id="main">
+      <div id="scroller"><div>inner</div></div>
+      <div role="tablist" id="tabs" style="position: absolute; left: 500px; top: 40px">
+        <span role="tab" aria-selected="true" id="tab-1" onclick="pick(1)">One</span>
+        <span role="tab" aria-selected="false" id="tab-2" onclick="pick(2)">Two</span>
+        <span role="tab" aria-selected="false" id="tab-3" onclick="pick(3)">Three</span>
+      </div>
+      <input id="type-target" style="position: absolute; left: 500px; top: 100px; width: 200px">
+      <a id="popup-link" href="/lab?popup=1" target="_blank" style="position: absolute; left: 500px; top: 140px">open new window</a>
+    </main>
+    <script>
+      const mirror = (el) => { el.dataset.scrollTop = String(Math.round(el.scrollTop)); };
+      const side = document.getElementById("side");
+      const scroller = document.getElementById("scroller");
+      side.addEventListener("scroll", () => mirror(side));
+      scroller.addEventListener("scroll", () => mirror(scroller));
+      mirror(side);
+      mirror(scroller);
+      const input = document.getElementById("type-target");
+      window.typedKeys = [];
+      document.addEventListener("keydown", (event) => {
+        window.typedKeys.push([event.key, event.keyCode]);
+        input.dataset.keys = JSON.stringify(window.typedKeys);
+      });
+      input.addEventListener("input", () => { input.dataset.value = input.value; });
+      window.pick = (n) => {
+        document.querySelectorAll('[role="tab"]').forEach((el, index) => el.setAttribute("aria-selected", String(index === n - 1)));
+      };
+    </script>
+  </body></html>`;
+
   const loginServer = createServer((request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(request.url?.startsWith("/signed-in") ? "<!doctype html><title>Signed in</title><h1>Signed in</h1>" : LOGIN_TEST_PAGE);
+    const page = request.url?.startsWith("/signed-in")
+      ? "<!doctype html><title>Signed in</title><h1>Signed in</h1>"
+      : request.url?.startsWith("/lab") ? LAB_PAGE : LOGIN_TEST_PAGE;
+    response.end(page);
   });
   await new Promise((resolve) => loginServer.listen(0, "127.0.0.1", resolve));
   const loginBase = `http://127.0.0.1:${loginServer.address().port}`;
@@ -415,6 +459,104 @@ async function runSmoke(brokerFile) {
   const png = Buffer.from(screenshot.json.screenshot.base64, "base64");
   assert(png.length > 5_000, `截图过小：${png.length} bytes`);
   assert(png.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), "截图不是 PNG");
+
+  // --- 工具层：滚轮落点 / role 组件 / 坐标口径 / 逐字键入 / 命名键键码 / 弹窗上报 / 事件留档 ---
+  const a1Path = (path) => `/v1/sessions/${a1.session_id}${path}`;
+  const a1Tool = async (tool, body) => {
+    const response = await sessionCall(leaseA, a1, a1Path(`/tools/${tool}`), { method: "POST", body });
+    assert(response.status === 200, `${tool} 失败：${response.status} ${response.text}`);
+    return response.json.result;
+  };
+  const attribute = async (selector, name) =>
+    (await a1Tool("extract", { selector, mode: "attributes", attributes: [name], all: false })).matches[0]?.attributes[name];
+
+  await sessionCall(leaseA, a1, a1Path("/navigate"), { method: "POST", body: { url: `${loginBase}/lab` } });
+
+  const lab = await a1Tool("snapshot", { max_chars: 0, max_items: 40, sections: ["interactive", "widgets"] });
+  const tabs = lab.widgets.filter((widget) => widget.role === "tab");
+  assert(tabs.length === 3, `snapshot 没有列出 role=tab 组件：${JSON.stringify(lab.widgets)}`);
+  // 只点名的分区有内容，其余为空
+  assert(
+    lab.links.length === 0 && lab.buttons.length === 0 && lab.text === "" && lab.interactive.length > 0,
+    `sections 裁剪不符合预期：links=${lab.links.length} interactive=${lab.interactive.length}`,
+  );
+  const link = lab.interactive.find((item) => item.selector === "#popup-link");
+  assert(link, "interactive 里没有 #popup-link");
+  assert(
+    Number.isInteger(link.rect.left) &&
+      Number.isInteger(link.rect.top) &&
+      link.rect.top < link.rect.y && link.rect.y < link.rect.top + link.rect.height &&
+      link.rect.left < link.rect.x && link.rect.x < link.rect.left + link.rect.width,
+    `interactive.rect 的中心点/左上角口径不对：${JSON.stringify(link.rect)}`,
+  );
+  const badSections = await sessionCall(leaseA, a1, a1Path("/tools/snapshot"), {
+    method: "POST",
+    body: { sections: ["iframes"] },
+  });
+  assert(badSections.status === 400, `未知 snapshot 分区应 400：${badSections.status}`);
+
+  await a1Tool("click", { selector: "#tab-2" });
+  assert((await attribute("#tab-2", "aria-selected")) === "true", "点击 role=tab 没有切换选中态");
+
+  await a1Tool("click", { selector: "#type-target" });
+  await a1Tool("type", { text: "ab\n中" });
+  await a1Tool("press", { key: "ArrowDown" });
+  await a1Tool("press", { key: "Enter", modifiers: 2 });
+  assert((await attribute("#type-target", "data-value")) === "ab中", `逐字键入结果不对：${await attribute("#type-target", "data-value")}`);
+  const typed = JSON.parse((await attribute("#type-target", "data-keys")) ?? "[]");
+  assert(
+    typed.some(([key, code]) => key === "Enter" && code === 13) &&
+      typed.some(([key, code]) => key === "ArrowDown" && code === 40),
+    `命名键的键码不对：${JSON.stringify(typed)}`,
+  );
+
+  const denied = await a1Tool("click", { selector: "#popup-link" });
+  assert(
+    denied.popup && denied.popup.adopted === false && denied.popup.url.endsWith("/lab?popup=1"),
+    `被拦下的弹窗没有带回目标地址：${JSON.stringify(denied.popup)}`,
+  );
+  assert(!(await sessionCall(leaseA, a1, a1Path("/observe?mode=light&max_chars=0"))).json.url.includes("popup=1"), "默认模式下页面不该被弹窗带走");
+
+  const eventPage = await a1Tool("events", { after: 0, limit: 5 });
+  // 这个会话的事件还没写满环形缓冲：读的人一条都没漏
+  assert(
+    eventPage.events.length === 5 && eventPage.next_after === 5 && eventPage.dropped === 0,
+    `事件分页的游标/断档数不对：${JSON.stringify({ next: eventPage.next_after, dropped: eventPage.dropped })}`,
+  );
+  const tail = await a1Tool("events", { after: eventPage.next_after, limit: 200 });
+  assert(tail.events.length > 0 && tail.events[0].seq === eventPage.next_after + 1, "事件游标翻页没有接上");
+  const eventsLog = await readFile(a1.events_log, "utf8");
+  assert(eventsLog.includes('"session.created"') && eventsLog.includes('"action.completed"'), "事件没有落到 events_log");
+
+  // 指定落点：只滚那个内部滚动容器，页面本身不动
+  const scroller = (await a1Tool("extract", { selector: "#scroller", mode: "rect", all: false })).matches[0].rect;
+  await a1Tool("scroll", { dy: 300, x: Math.round(scroller.x), y: Math.round(scroller.y) });
+  assert(Number(await attribute("#scroller", "data-scroll-top")) > 0, "指定落点的滚轮没有滚动内部容器");
+  const atTop = await a1Tool("snapshot", { max_chars: 0, max_items: 1, sections: ["headings"] });
+  assert(atTop.scroll.y === 0, `滚内部容器时页面被带着滚了：scroll.y=${atTop.scroll.y}`);
+
+  // 滚轮默认打在视口中心：滚的是主内容区，固定侧栏不动
+  await a1Tool("scroll", { dy: 600 });
+  const scrolled = await a1Tool("snapshot", { max_chars: 0, max_items: 1, sections: ["headings"] });
+  assert(scrolled.scroll.y >= 500, `默认滚轮没有滚动主内容区：scroll.y=${scrolled.scroll.y}`);
+  assert((await attribute("#side", "data-scroll-top")) === "0", `默认滚轮滚到了固定侧栏上：${await attribute("#side", "data-scroll-top")}`);
+
+  // adopt 模式：同一个链接，弹窗地址在当前页面打开
+  const adopter = (
+    await leaseCall(leaseA, "/v1/sessions", {
+      method: "POST",
+      body: { name: "adopt", width: 1280, height: 800, popup: "adopt" },
+    })
+  ).json;
+  await sessionCall(leaseA, adopter, `/v1/sessions/${adopter.session_id}/navigate`, { method: "POST", body: { url: `${loginBase}/lab` } });
+  const adopted = await sessionCall(leaseA, adopter, `/v1/sessions/${adopter.session_id}/tools/click`, {
+    method: "POST",
+    body: { selector: "#popup-link" },
+  });
+  assert(adopted.status === 200 && adopted.json.result.popup?.adopted === true, `adopt 模式没有接管弹窗：${adopted.text}`);
+  const adoptedUrl = (await sessionCall(leaseA, adopter, `/v1/sessions/${adopter.session_id}/observe?mode=light&max_chars=0`)).json.url;
+  assert(adoptedUrl.includes("popup=1"), `adopt 模式下页面没有打开弹窗地址：${adoptedUrl}`);
+  await sessionCall(leaseA, adopter, `/v1/sessions/${adopter.session_id}/tools/close`, { method: "POST", body: {} });
 
   const loginUrl = `${loginBase}/login`;
   const b1Path = (path) => `/v1/sessions/${b1.session_id}${path}`;

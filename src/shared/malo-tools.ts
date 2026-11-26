@@ -50,12 +50,19 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
   {
     name: "snapshot",
     description:
-      "Return structured page content: visible text, headings, links, buttons, inputs, forms, tables, landmarks, frames and interactive elements.",
+      "Return structured page content: visible text, headings, links, buttons, inputs, forms, tables, landmarks, role-based widgets, frames and interactive elements. Pass sections to get only the lists you need (the others come back empty); in interactive[].rect, x/y is the element center and left/top the corner, ready for click/drag.",
     input_schema: {
       type: "object",
       properties: {
         max_chars: { type: "integer", minimum: 0, maximum: 30000, default: 8000 },
         max_items: { type: "integer", minimum: 1, maximum: 500, default: 120 },
+        sections: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          description:
+            "Only collect these lists: text, headings, links, buttons, inputs, selects, forms, tables, landmarks, interactive, widgets, frames, dialogs, messages.",
+        },
       },
       additionalProperties: false,
     },
@@ -142,14 +149,35 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
   },
   {
     name: "press",
-    description: "Press a key. Cmd+A/C/V/X/Z map to editing commands; other Meta chords are rejected.",
+    description:
+      "Press a key: a single character, or Enter, Tab, Escape, Backspace, Delete, Insert, Home, End, PageUp, PageDown, Space, ArrowUp/Down/Left/Right, F1-F12. Cmd+A/C/V/X/Z map to editing commands; other Meta chords are rejected. Keyboard input goes to the focused element wherever it is.",
     input_schema: {
       type: "object",
       properties: {
         key: { type: "string" },
-        modifiers: { type: "integer", minimum: 0, default: 0 },
+        modifiers: {
+          type: "integer",
+          minimum: 0,
+          maximum: 15,
+          default: 0,
+          description: "Bitmask, add the keys you want: Alt=1, Ctrl=2, Meta/Cmd=4, Shift=8.",
+        },
       },
       required: ["key"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "type",
+    description:
+      "Type text one character at a time into the focused element (a newline sends Enter). Use it for editors, mention or autocomplete boxes that listen for key events; use fill to replace a field's value in one go.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", maxLength: 5000 },
+        delay_ms: { type: "integer", minimum: 0, maximum: 1000, default: 0 },
+      },
+      required: ["text"],
       additionalProperties: false,
     },
   },
@@ -192,12 +220,15 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
   },
   {
     name: "scroll",
-    description: "Scroll the page by a delta.",
+    description:
+      "Send a mouse wheel delta. The wheel lands at the viewport center, so it scrolls the main content instead of a fixed sidebar in a corner; pass x/y to aim at a particular scroll container.",
     input_schema: {
       type: "object",
       properties: {
         dx: { type: "number", default: 0 },
         dy: { type: "number", default: 0 },
+        x: { type: "number", description: "Wheel position in viewport coordinates (give both x and y)." },
+        y: { type: "number" },
       },
       additionalProperties: false,
     },
@@ -319,7 +350,8 @@ export const MALO_TOOLS: MaloToolDefinition[] = [
   },
   {
     name: "events",
-    description: "Read session events after a sequence number.",
+    description:
+      "Read session events after a sequence number. Returns events, next_after (the cursor for the next poll) and dropped (how many events since your cursor were overwritten before you read them; 0 means nothing was missed). Events are also appended to the session's events_log file.",
     input_schema: {
       type: "object",
       properties: {

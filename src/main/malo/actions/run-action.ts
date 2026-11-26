@@ -2,7 +2,7 @@ import { DemoError, stripErrorCode } from "../../../shared/errors";
 import type { MaloAction, MaloActionResult } from "../../../shared/malo";
 import { sleep } from "../../tools";
 import { fillInput } from "./input";
-import { SUPPORTED_KEY_NAMES, isSupportedKey } from "./keys";
+import { NAMED_KEY_NAMES, isSupportedKey } from "../../keys";
 import { locateByText } from "./pointer";
 import type { SessionInternals } from "../session-internals";
 import { observePage } from "../observation";
@@ -16,11 +16,14 @@ export async function runAction(
   session.touch();
   const boundedTimeout = Math.max(100, Math.min(120_000, Math.floor(timeoutMs)));
   session.record("action.started", { action: action.type });
+  const popupBefore = session.popupSeq;
   try {
     const detail = await executeAction(session, action, boundedTimeout);
     const observation = await observePage(session, "light", 2_000);
     session.record("action.completed", { action: action.type, detail });
-    return { action: action.type, detail, observation };
+    // 这个动作触发了 window.open：把目标地址带回给 agent（被拦下，或 adopt 模式下已在当前页面打开）
+    const popup = session.popupSeq === popupBefore ? {} : { popup: session.lastPopup ?? undefined };
+    return { action: action.type, detail, observation, ...popup };
   } catch (error) {
     const screenshotPath = await session.captureFailure();
     const message = error instanceof Error ? error.message : String(error);
@@ -137,7 +140,7 @@ export async function executeAction(
       if (!isSupportedKey(action.key)) {
         throw new DemoError(
           "E_UNSUPPORTED",
-          `press.key 不支持：${action.key}；可用单字符或 ${[...SUPPORTED_KEY_NAMES].join(" / ")}`,
+          `press.key 不支持：${action.key}；可用单字符或 ${NAMED_KEY_NAMES.join(" / ")}`,
         );
       }
       if (
@@ -156,8 +159,31 @@ export async function executeAction(
       if (action.dy !== undefined && !Number.isFinite(action.dy)) {
         throw new DemoError("E_UNSUPPORTED", "scroll.dy 必须是有限数字");
       }
-      await session.driver.scroll({ x: action.dx ?? 0, y: action.dy ?? 0 });
-      return `scrolled ${action.dx ?? 0},${action.dy ?? 0}`;
+      const hasX = action.x !== undefined;
+      const hasY = action.y !== undefined;
+      if ((hasX !== hasY || (hasX && (!Number.isFinite(action.x) || !Number.isFinite(action.y))))) {
+        throw new DemoError("E_UNSUPPORTED", "scroll 落点需要同时给有限的 x 和 y");
+      }
+      const delta = { x: action.dx ?? 0, y: action.dy ?? 0 };
+      const origin = typeof action.x === "number" && typeof action.y === "number"
+        ? { x: action.x, y: action.y }
+        : undefined;
+      await session.driver.scroll(delta, origin);
+      return `scrolled ${delta.x},${delta.y}${origin ? ` at ${origin.x},${origin.y}` : ""}`;
+    }
+    case "type": {
+      if (typeof action.text !== "string" || action.text === "") {
+        throw new DemoError("E_UNSUPPORTED", "type.text 必须是非空字符串");
+      }
+      if (action.text.length > 5_000) {
+        throw new DemoError("E_UNSUPPORTED", "type.text 最长 5000 字符，长文本请用 fill");
+      }
+      const delay = action.delay_ms ?? 0;
+      if (!Number.isInteger(delay) || delay < 0 || delay > 1000) {
+        throw new DemoError("E_UNSUPPORTED", "type.delay_ms 必须是 0-1000 的整数");
+      }
+      await session.driver.typeText(action.text, delay);
+      return `typed ${[...action.text].length} chars`;
     }
     case "hover": {
       if (action.selector !== undefined && typeof action.selector !== "string") {
@@ -252,8 +278,9 @@ export async function executeAction(
         throw new DemoError("E_UNSUPPORTED", "history.action 只能是 back / forward / reload");
       }
       const wc = session.stage.view.webContents;
-      if (action.action === "back") wc.goBack();
-      else if (action.action === "forward") wc.goForward();
+      const history = wc.navigationHistory;
+      if (action.action === "back") history.goBack();
+      else if (action.action === "forward") history.goForward();
       else wc.reload();
       await sleep(300);
       return `history ${action.action}`;

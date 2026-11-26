@@ -1,18 +1,60 @@
 import type { MaloSnapshot } from "../../shared/malo";
 import type { SessionInternals } from "./session-internals";
 
-export async function snapshotPage(
-  session: SessionInternals,
-  maxChars = 8_000,
-  maxItems = 120,
-): Promise<MaloSnapshot> {
-  session.assertOpen();
-  session.touch();
-  const limitChars = Math.max(0, Math.min(30_000, Math.floor(maxChars)));
-  const limitItems = Math.max(1, Math.min(500, Math.floor(maxItems)));
-  const snapshot = await session.driver.evaluate<MaloSnapshot>(`(() => {
-    const maxChars = ${JSON.stringify(limitChars)};
-    const maxItems = ${JSON.stringify(limitItems)};
+export const SNAPSHOT_SECTIONS = [
+  "text",
+  "headings",
+  "links",
+  "buttons",
+  "inputs",
+  "selects",
+  "forms",
+  "tables",
+  "landmarks",
+  "interactive",
+  "widgets",
+  "frames",
+  "dialogs",
+  "messages",
+] as const;
+
+export type SnapshotSection = (typeof SNAPSHOT_SECTIONS)[number];
+
+export function isSnapshotSection(value: unknown): value is SnapshotSection {
+  return typeof value === "string" && (SNAPSHOT_SECTIONS as readonly string[]).includes(value);
+}
+
+export type SnapshotOptions = {
+  maxChars?: number;
+  maxItems?: number;
+  /** 只采集并列出这些分区；不给 = 全部。没被点名的分区返回空数组。 */
+  sections?: SnapshotSection[];
+};
+
+export type SnapshotLimits = {
+  maxChars: number;
+  maxItems: number;
+  sections: SnapshotSection[] | null;
+};
+
+export function snapshotLimits(options: SnapshotOptions, scale = 1): SnapshotLimits {
+  return {
+    maxChars: Math.max(0, Math.min(30_000, Math.floor((options.maxChars ?? 8_000) * scale))),
+    maxItems: Math.max(1, Math.min(500, Math.floor((options.maxItems ?? 120) * scale))),
+    sections: options.sections === undefined ? null : [...new Set(options.sections)],
+  };
+}
+
+/**
+ * 页面内采集脚本：对任意框架的 document 都成立，所以顶层页面和 iframe 共用这一份。
+ * 在页面里执行，不能引用模块作用域的任何东西——参数全部内联。
+ */
+export function buildSnapshotScript(limits: SnapshotLimits): string {
+  return `(() => {
+    const maxChars = ${JSON.stringify(limits.maxChars)};
+    const maxItems = ${JSON.stringify(limits.maxItems)};
+    const sections = ${JSON.stringify(limits.sections)};
+    const want = (name) => sections === null || sections.includes(name);
     const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
     const clip = (value, size) => value.length > size ? value.slice(0, size) : value;
     const selectorFor = (el) => {
@@ -51,9 +93,17 @@ export async function snapshotPage(
         ? "[redacted]"
         : (el.innerText || el.textContent || el.value || "")
     ), 300);
+    // x/y 是中心点，可以直接喂给 click/drag；left/top 是左上角
     const rectOf = (el) => {
       const r = el.getBoundingClientRect();
-      return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
+      return {
+        x: Math.round(r.x + r.width / 2),
+        y: Math.round(r.y + r.height / 2),
+        left: Math.round(r.left),
+        top: Math.round(r.top),
+        width: Math.round(r.width),
+        height: Math.round(r.height)
+      };
     };
     const labelOf = (el) => {
       const aria = el.getAttribute("aria-label");
@@ -65,9 +115,10 @@ export async function snapshotPage(
       const closest = el.closest("label");
       return closest ? clip(clean(closest.innerText), 200) : "";
     };
+    const flag = (el, name) => el.getAttribute(name) === "true";
     const truncated = {
       headings: false, links: false, buttons: false, inputs: false, selects: false,
-      forms: false, tables: false, landmarks: false, interactive: false,
+      forms: false, tables: false, landmarks: false, interactive: false, widgets: false,
       frames: false, dialogs: false, messages: false, text: false
     };
     const take = (list, item, key) => {
@@ -76,25 +127,25 @@ export async function snapshotPage(
     };
 
     const headings = [];
-    for (const el of document.querySelectorAll("h1,h2,h3,h4,h5,h6")) {
+    if (want("headings")) for (const el of document.querySelectorAll("h1,h2,h3,h4,h5,h6")) {
       if (!visible(el)) continue;
       take(headings, { level: Number(el.tagName.slice(1)), text: textOf(el), selector: selectorFor(el) }, "headings");
     }
 
     const links = [];
-    for (const el of document.querySelectorAll("a[href]")) {
+    if (want("links")) for (const el of document.querySelectorAll("a[href]")) {
       if (!visible(el)) continue;
       take(links, { text: textOf(el), href: el.href, selector: selectorFor(el) }, "links");
     }
 
     const buttons = [];
-    for (const el of document.querySelectorAll('button,[role="button"],input[type="button"],input[type="submit"]')) {
+    if (want("buttons")) for (const el of document.querySelectorAll('button,[role="button"],input[type="button"],input[type="submit"]')) {
       if (!visible(el)) continue;
       take(buttons, { text: textOf(el), selector: selectorFor(el), disabled: el.disabled === true || el.getAttribute("aria-disabled") === "true" }, "buttons");
     }
 
     const inputs = [];
-    for (const el of document.querySelectorAll('input:not([type="hidden"]),textarea')) {
+    if (want("inputs")) for (const el of document.querySelectorAll('input:not([type="hidden"]),textarea')) {
       if (!visible(el)) continue;
       const type = (el.getAttribute("type") || el.tagName.toLowerCase()).toLowerCase();
       const sensitive = type === "password";
@@ -110,7 +161,7 @@ export async function snapshotPage(
     }
 
     const selects = [];
-    for (const el of document.querySelectorAll("select")) {
+    if (want("selects")) for (const el of document.querySelectorAll("select")) {
       if (!visible(el)) continue;
       take(selects, {
         name: el.getAttribute("name") || "",
@@ -121,7 +172,7 @@ export async function snapshotPage(
     }
 
     const forms = [];
-    for (const el of document.querySelectorAll("form")) {
+    if (want("forms")) for (const el of document.querySelectorAll("form")) {
       if (!visible(el)) continue;
       take(forms, {
         action: el.action || "",
@@ -132,7 +183,7 @@ export async function snapshotPage(
     }
 
     const tables = [];
-    for (const table of document.querySelectorAll("table")) {
+    if (want("tables")) for (const table of document.querySelectorAll("table")) {
       if (!visible(table)) continue;
       const headRow = table.querySelector("thead tr") || table.querySelector("tr");
       const headers = headRow
@@ -155,7 +206,7 @@ export async function snapshotPage(
       HEADER: "banner", NAV: "navigation", MAIN: "main", ASIDE: "complementary",
       FOOTER: "contentinfo", FORM: "form"
     }[el.tagName] || "");
-    for (const el of document.querySelectorAll('header,nav,main,aside,footer,form,[role="banner"],[role="navigation"],[role="main"],[role="complementary"],[role="contentinfo"],[role="region"]')) {
+    if (want("landmarks")) for (const el of document.querySelectorAll('header,nav,main,aside,footer,form,[role="banner"],[role="navigation"],[role="main"],[role="complementary"],[role="contentinfo"],[role="region"]')) {
       if (!visible(el)) continue;
       take(landmarks, {
         role: roleFor(el),
@@ -166,7 +217,7 @@ export async function snapshotPage(
 
     const interactive = [];
     const seen = new Set();
-    for (const el of document.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[tabindex]:not([tabindex="-1"])')) {
+    if (want("interactive")) for (const el of document.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[tabindex]:not([tabindex="-1"])')) {
       if (!visible(el) || seen.has(el)) continue;
       seen.add(el);
       take(interactive, {
@@ -178,26 +229,43 @@ export async function snapshotPage(
       }, "interactive");
     }
 
+    // 自定义组件：没有原生标签、靠 role 表达语义的可操作元素
+    const widgets = [];
+    if (want("widgets")) for (const el of document.querySelectorAll('[role="tab"],[role="option"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="switch"],[role="checkbox"],[role="radio"],[role="link"],[role="treeitem"],[role="combobox"],[role="slider"],[role="spinbutton"]')) {
+      if (!visible(el)) continue;
+      take(widgets, {
+        role: el.getAttribute("role"),
+        tag: el.tagName.toLowerCase(),
+        text: textOf(el),
+        selector: selectorFor(el),
+        disabled: el.disabled === true || el.getAttribute("aria-disabled") === "true",
+        selected: flag(el, "aria-selected"),
+        checked: flag(el, "aria-checked"),
+        expanded: flag(el, "aria-expanded")
+      }, "widgets");
+    }
+
     const frames = [];
-    for (const el of document.querySelectorAll("iframe")) {
+    if (want("frames")) for (const el of document.querySelectorAll("iframe")) {
       if (!visible(el)) continue;
       take(frames, { url: el.src || "", name: el.name || "", title: el.title || "" }, "frames");
     }
 
     const dialogs = [];
-    for (const el of document.querySelectorAll('dialog[open],[role="dialog"]')) {
+    if (want("dialogs")) for (const el of document.querySelectorAll('dialog[open],[role="dialog"]')) {
       if (!visible(el)) continue;
       take(dialogs, { text: clip(textOf(el), 1000), selector: selectorFor(el) }, "dialogs");
     }
 
     const messages = [];
-    for (const el of document.querySelectorAll('[role="alert"],[aria-live]')) {
+    if (want("messages")) for (const el of document.querySelectorAll('[role="alert"],[aria-live]')) {
       if (!visible(el)) continue;
       take(messages, { text: clip(textOf(el), 1000), selector: selectorFor(el) }, "messages");
     }
 
+    const wantsText = want("text");
     const body = document.body;
-    const text = clean(body && body.innerText ? body.innerText : "");
+    const text = wantsText ? clean(body && body.innerText ? body.innerText : "") : "";
     if (text.length > maxChars) truncated.text = true;
     return {
       url: location.href,
@@ -207,11 +275,22 @@ export async function snapshotPage(
       scroll: { x: Math.round(scrollX), y: Math.round(scrollY), height: document.documentElement.scrollHeight },
       text: text.slice(0, maxChars),
       text_length: text.length,
-      headings, links, buttons, inputs, selects, forms, tables, landmarks, interactive, frames, dialogs, messages,
+      headings, links, buttons, inputs, selects, forms, tables, landmarks, interactive, widgets, frames, dialogs, messages,
       truncated
     };
-  })()`);
+  })()`;
+}
+
+export async function snapshotPage(
+  session: SessionInternals,
+  options: SnapshotOptions = {},
+): Promise<MaloSnapshot> {
+  session.assertOpen();
+  session.touch();
+  const limits = snapshotLimits(options);
+  const snapshot = await session.driver.evaluate<MaloSnapshot>(buildSnapshotScript(limits));
   session.record("observe.snapshot", {
+    sections: limits.sections,
     links: snapshot.links.length,
     buttons: snapshot.buttons.length,
     inputs: snapshot.inputs.length,

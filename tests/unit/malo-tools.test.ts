@@ -59,7 +59,7 @@ function fakeSession(): MaloToolSession {
       captured: 0,
     })),
     responses: vi.fn(async () => ({ responses: [], has_more: false })),
-    eventsAfter: vi.fn(() => []),
+    eventsAfter: vi.fn(() => ({ events: [], next_after: 0, dropped: 0 })),
     close: vi.fn(async () => undefined),
   };
 }
@@ -163,7 +163,7 @@ describe("malo-browser tool manifest", () => {
     expect(session.navigate).toHaveBeenCalledWith("https://example.com", 30_000, 100);
 
     await invokeMaloTool("snapshot", { max_chars: 100, max_items: 5 }, session);
-    expect(session.snapshot).toHaveBeenCalledWith(100, 5);
+    expect(session.snapshot).toHaveBeenCalledWith(100, 5, undefined);
 
     await invokeMaloTool("observe", { mode: "screenshot", clip_selector: "#player" }, session);
     expect(session.observe).toHaveBeenCalledWith("screenshot", 2_000, "#player");
@@ -531,5 +531,52 @@ describe("feature handshake", () => {
     const supportsClip = "clip_selector" in observe!.input_schema.properties;
     // 能力清单必须和 schema 一致：这是客户端启动前判断能否只截元素的外交口径
     expect(MALO_FEATURES.includes("observe.screenshot_clip")).toBe(supportsClip);
+  });
+});
+
+describe("malo-browser tool dispatch additions", () => {
+  it("passes snapshot sections through and refuses unknown ones", async () => {
+    const session = fakeSession();
+
+    await invokeMaloTool("snapshot", { sections: ["widgets", "links"] }, session);
+    expect(session.snapshot).toHaveBeenCalledWith(8_000, 120, ["widgets", "links"]);
+
+    for (const sections of [[], "links", ["links", "iframes"], [42]]) {
+      await expect(invokeMaloTool("snapshot", { sections }, session)).rejects.toMatchObject({
+        code: "E_BAD_REQUEST",
+        message: expect.stringContaining("sections"),
+      });
+    }
+  });
+
+  it("routes type and aimed scroll through the action path with their arguments intact", async () => {
+    const session = fakeSession();
+
+    await invokeMaloTool("type", { text: "你好", delay_ms: 5 }, session);
+    await invokeMaloTool("scroll", { dy: 300, x: 400, y: 500 }, session);
+
+    expect(session.act).toHaveBeenNthCalledWith(1, { type: "type", text: "你好", delay_ms: 5 });
+    expect(session.act).toHaveBeenNthCalledWith(2, { type: "scroll", dy: 300, x: 400, y: 500 });
+  });
+
+  it("returns the event page with its cursor and drop count", async () => {
+    const session = fakeSession();
+    session.eventsAfter = vi.fn(() => ({ events: [{ seq: 9 }], next_after: 9, dropped: 3 }));
+
+    await expect(invokeMaloTool("events", { after: 5 }, session)).resolves.toEqual({
+      tool: "events",
+      result: { events: [{ seq: 9 }], next_after: 9, dropped: 3 },
+    });
+    expect(session.eventsAfter).toHaveBeenCalledWith(5, 100);
+  });
+
+  it("declares type, the modifier bitmask and the snapshot sections in the manifest", () => {
+    const type = MALO_TOOLS.find((tool) => tool.name === "type")!;
+    expect(type.input_schema.required).toEqual(["text"]);
+    const press = MALO_TOOLS.find((tool) => tool.name === "press")!;
+    expect(String((press.input_schema.properties.modifiers as { description?: string }).description)).toContain("Alt=1");
+    const snapshot = MALO_TOOLS.find((tool) => tool.name === "snapshot")!;
+    expect(snapshot.input_schema.properties.sections).toBeDefined();
+    expect(MALO_TOOLS).toHaveLength(27);
   });
 });

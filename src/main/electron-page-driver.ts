@@ -1,6 +1,7 @@
 import type { WebContents } from "electron";
 import { DemoError } from "../shared/errors";
 import type { Point, Rect } from "../shared/types";
+import { keyDefinition, keyEventText, MODIFIERS } from "./keys";
 import type { ClickOptions, PageDriver, WaitState } from "./core/page-driver";
 import { sleep } from "./tools";
 
@@ -285,8 +286,8 @@ export class ElectronPageDriver implements PageDriver {
     // CDP Meta key events fall through to the macOS application menu and can
     // open the native About panel. Route the common editing shortcuts through
     // WebContents commands instead of synthesizing a system-level chord.
-    if ((modifiers & 4) !== 0) {
-      const shift = (modifiers & 8) !== 0;
+    if ((modifiers & MODIFIERS.meta) !== 0) {
+      const shift = (modifiers & MODIFIERS.shift) !== 0;
       const normalized = key.toLowerCase();
       if (normalized === "a" && !shift) return this.wc.selectAll();
       if (normalized === "c" && !shift) return this.wc.copy();
@@ -295,38 +296,87 @@ export class ElectronPageDriver implements PageDriver {
       if (normalized === "z") return shift ? this.wc.redo() : this.wc.undo();
       throw new DemoError("E_UNSUPPORTED", `暂不支持 Meta 组合键 ${key}，请改用明确的编辑动作`);
     }
-    const code = key.length === 1 ? `Key${key.toUpperCase()}` : key;
-    const keyCode = key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0;
-    await this.send("Input.dispatchKeyEvent", {
-      type: "rawKeyDown",
-      key,
-      code,
-      windowsVirtualKeyCode: keyCode,
-      nativeVirtualKeyCode: keyCode,
+    const definition = keyDefinition(key);
+    const text = keyEventText(definition, modifiers);
+    const params = {
+      key: definition.key,
+      code: definition.code,
+      windowsVirtualKeyCode: definition.keyCode,
+      nativeVirtualKeyCode: definition.keyCode,
       modifiers,
-    });
-    await this.send("Input.dispatchKeyEvent", {
-      type: "keyUp",
-      key,
-      code,
-      windowsVirtualKeyCode: keyCode,
-      nativeVirtualKeyCode: keyCode,
-      modifiers,
-    });
+    };
+    if (text === undefined) {
+      await this.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...params });
+    } else {
+      await this.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        ...params,
+        text,
+        unmodifiedText: text,
+      });
+    }
+    await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...params });
+  }
+
+  /**
+   * 逐个字符发按键事件（换行发回车）。联想框、富文本这类监听 keydown 的组件要的是这条通路；
+   * insertText 是整段塞进去，不经过按键事件。
+   */
+  async typeText(text: string, delayMs: number): Promise<void> {
+    for (const char of text) {
+      if (char === "\r") continue;
+      await this.press(char === "\n" ? "Enter" : char);
+      if (delayMs > 0) await sleep(delayMs);
+    }
   }
 
   async selectAll(): Promise<void> {
     await this.press("a", 4);
   }
 
-  async scroll(delta: Point): Promise<void> {
+  /**
+   * 不给落点时打在视口中心：打在角落会滚到盖在那里的固定导航栏或侧栏上。
+   * 滚轮在合成器线程上生效，发完事件位置不会立刻变：等滚动位置稳定了再返回，
+   * 调用方紧接着读到的才是滚完的位置。
+   */
+  async scroll(delta: Point, origin?: Point): Promise<void> {
+    const at = origin ?? await this.evaluate<Point>(
+      "({ x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) })",
+    );
+    const signature = () =>
+      this
+        .evaluate<string>(
+          `(() => {
+            let node = document.elementFromPoint(${at.x}, ${at.y});
+            let state = scrollX + "," + scrollY;
+            while (node) { state += "," + Math.round(node.scrollLeft) + "," + Math.round(node.scrollTop); node = node.parentElement; }
+            return state;
+          })()`,
+        )
+        .catch(() => "");
+    const before = await signature();
     await this.send("Input.dispatchMouseEvent", {
       type: "mouseWheel",
-      x: 10,
-      y: 10,
+      x: at.x,
+      y: at.y,
       deltaX: delta.x,
       deltaY: delta.y,
     });
+    let last = before;
+    let stable = 0;
+    const deadline = Date.now() + 600;
+    while (Date.now() < deadline) {
+      await sleep(40);
+      const current = await signature();
+      if (current === last) {
+        // 一直没动（已经到底）多等几拍再放手；动过之后两拍不变就算稳了
+        stable += 1;
+        if (stable >= (current === before ? 4 : 2)) return;
+      } else {
+        stable = 0;
+      }
+      last = current;
+    }
   }
 
   async screenshot(file: string): Promise<void> {

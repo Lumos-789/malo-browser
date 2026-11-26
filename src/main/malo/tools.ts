@@ -1,5 +1,6 @@
 import { DemoError, isDemoError } from "../../shared/errors";
 import { MALO_TOOL_NAMES } from "../../shared/malo-tools";
+import { isSnapshotSection, type SnapshotSection } from "./snapshot";
 import type {
   MaloAction,
   MaloActionResult,
@@ -7,6 +8,7 @@ import type {
   MaloAssertFailure,
   MaloAssertInput,
   MaloAssertResult,
+  MaloEventsPage,
   MaloExtractResult,
   MaloLightObservation,
   MaloLoginInput,
@@ -24,7 +26,7 @@ import type {
 export type MaloToolSession = {
   navigate(url: string, timeoutMs?: number, settleMs?: number): Promise<MaloLightObservation>;
   observe(mode: "light" | "screenshot", maxChars?: number, clipSelector?: string): Promise<MaloObservation>;
-  snapshot(maxChars?: number, maxItems?: number): Promise<MaloSnapshot>;
+  snapshot(maxChars?: number, maxItems?: number, sections?: SnapshotSection[]): Promise<MaloSnapshot>;
   extract(input: {
     selector: string;
     mode?: "text" | "html" | "attributes" | "rect";
@@ -48,7 +50,7 @@ export type MaloToolSession = {
     after?: number;
     limit?: number;
   }): Promise<MaloResponsesResult>;
-  eventsAfter(after: number, limit?: number): MaloSessionEvent[];
+  eventsAfter(after: number, limit?: number): MaloEventsPage;
   close(): Promise<void>;
 };
 
@@ -61,6 +63,16 @@ function readString(args: Record<string, unknown>, field: string, required = tru
   if (value === undefined && !required) return undefined;
   if (typeof value !== "string" || value.trim() === "") throw bad(`${field} 必须是非空字符串`);
   return value;
+}
+
+function readSections(raw: unknown): SnapshotSection[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw bad("sections 必须是非空数组，可选值：text、headings、links、buttons、inputs、selects、forms、tables、landmarks、interactive、widgets、frames、dialogs、messages");
+  }
+  const invalid = raw.find((item) => !isSnapshotSection(item));
+  if (invalid !== undefined) throw bad(`sections 含未知分区：${JSON.stringify(invalid)}`);
+  return raw as SnapshotSection[];
 }
 
 function readInteger(
@@ -109,6 +121,7 @@ export async function invokeMaloTool(
       result = await session.snapshot(
         readInteger(args, "max_chars", 8_000, 0, 30_000),
         readInteger(args, "max_items", 120, 1, 500),
+        readSections(args.sections),
       );
       break;
     case "extract": {
@@ -137,11 +150,10 @@ export async function invokeMaloTool(
       break;
     }
     case "events": {
-      const events = session.eventsAfter(
+      result = session.eventsAfter(
         readInteger(args, "after", 0, 0, Number.MAX_SAFE_INTEGER),
         readInteger(args, "limit", 100, 1, 200),
       );
-      result = { events };
       break;
     }
     case "network_capture": {
@@ -239,6 +251,7 @@ export async function invokeMaloTool(
     case "drag":
     case "upload_file":
     case "press":
+    case "type":
     case "hover":
     case "select":
     case "focus":

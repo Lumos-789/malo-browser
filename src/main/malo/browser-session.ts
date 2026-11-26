@@ -14,10 +14,11 @@ import type {
   MaloNavigationDiagnostics,
   MaloNetworkCaptureState,
   MaloNetworkInfo,
+  MaloEventsPage,
   MaloObservation,
+  MaloPopupInfo,
   MaloResponsesResult,
   MaloRunReport,
-  MaloSessionEvent,
   MaloSessionSummary,
   MaloSnapshot,
   MaloWatchResult,
@@ -27,6 +28,7 @@ import { sleep } from "../tools";
 import { StageWindow } from "../windows/stage-window";
 import { runAction } from "./actions/run-action";
 import { checkExpectations } from "./assert-flow";
+import { EventLog } from "./event-log";
 import { extractElements, type ExtractInput } from "./extract";
 import { runLogin } from "./login-flow";
 import { navigatePage } from "./navigation";
@@ -36,12 +38,11 @@ import { removePartitionDir } from "./profile-store";
 import { NetworkCapture } from "./network-capture";
 import { validateUrl } from "./navigation";
 import type { BrowserSessionOptions, WatchInput } from "./session-internals";
-import { snapshotPage } from "./snapshot";
+import { snapshotPage, type SnapshotSection } from "./snapshot";
 import { withTimeout } from "./timeouts";
 
 export type { BrowserSessionOptions } from "./session-internals";
 
-const MAX_EVENT_LOG = 200;
 const DEFAULT_VIEWPORT = { width: 1440, height: 900 };
 const MAX_NETWORK_FAILURES = 40;
 const MAX_CONSOLE_ERRORS = 20;
@@ -68,15 +69,18 @@ export class BrowserSession {
   readonly downloadsDir: string;
   readonly artifactsDir: string;
   readonly createdAt: string;
+  /** 会话事件落盘文件（JSONL），会话关闭后保留到租约目录被清扫。 */
+  readonly eventsLog: string;
 
   readonly stage: StageWindow;
   private readonly partitionName: string;
   readonly driver: ElectronPageDriver;
   readonly capture: NetworkCapture;
+  private readonly log: EventLog;
   private detachHooks: (() => void) | null = null;
   private lastUsedMs = Date.now();
-  private eventSeq = 0;
-  private readonly events: MaloSessionEvent[] = [];
+  popupSeq = 0;
+  lastPopup: MaloPopupInfo | null = null;
   readonly failedRequests: MaloNetworkInfo["failures"] = [];
   readonly consoleErrors: MaloNetworkInfo["console_errors"] = [];
   navigationState: MaloNavigationDiagnostics | null = null;
@@ -91,6 +95,8 @@ export class BrowserSession {
     this.createdAt = new Date().toISOString();
     this.downloadsDir = path.join(options.rootDir, this.id, "downloads");
     this.artifactsDir = path.join(options.rootDir, this.id, "artifacts");
+    this.eventsLog = path.join(this.artifactsDir, "events.jsonl");
+    this.log = new EventLog(this.eventsLog, options.eventLimit);
     const viewport = {
       width: options.width ?? DEFAULT_VIEWPORT.width,
       height: options.height ?? DEFAULT_VIEWPORT.height,
@@ -171,8 +177,21 @@ export class BrowserSession {
   private async prepareWebContents(): Promise<void> {
     const wc = this.stage.view.webContents;
     const partitionSession = wc.session;
-    wc.setWindowOpenHandler(() => {
-      this.record("navigation.popup_blocked");
+    wc.setWindowOpenHandler((details) => {
+      // 弹窗一律不开新窗口（一个会话只有一个页面）：拦下的目标地址带回给 agent，
+      // adopt 模式下直接在当前页面打开，等价于「点开了新窗口的链接」
+      const popup = { seq: this.popupSeq + 1, url: details.url, adopted: false };
+      this.popupSeq = popup.seq;
+      this.lastPopup = popup;
+      if (this.options.popup === "adopt" && /^https?:/i.test(details.url)) {
+        popup.adopted = true;
+        this.record("navigation.popup_adopted", { url: details.url, disposition: details.disposition });
+        void wc.loadURL(details.url).catch((error: unknown) => {
+          this.record("navigation.popup_adopt_failed", { url: details.url, reason: (error as Error).message });
+        });
+      } else {
+        this.record("navigation.popup_blocked", { url: details.url, disposition: details.disposition });
+      }
       return { action: "deny" };
     });
     wc.on("will-navigate", (event, target) => {
@@ -352,8 +371,8 @@ export class BrowserSession {
     return observePage(this, mode, maxChars, clipSelector);
   }
 
-  snapshot(maxChars = 8_000, maxItems = 120): Promise<MaloSnapshot> {
-    return snapshotPage(this, maxChars, maxItems);
+  snapshot(maxChars = 8_000, maxItems = 120, sections?: SnapshotSection[]): Promise<MaloSnapshot> {
+    return snapshotPage(this, { maxChars, maxItems, sections });
   }
   extract(input: ExtractInput): Promise<MaloExtractResult> {
     return extractElements(this, input);
@@ -423,9 +442,8 @@ export class BrowserSession {
     return this.running(() => runLogin(this, input));
   }
 
-  eventsAfter(after: number, limit = 100): MaloSessionEvent[] {
-    const bounded = Math.max(1, Math.min(MAX_EVENT_LOG, Math.floor(limit)));
-    return this.events.filter((event) => event.seq > after).slice(0, bounded);
+  eventsAfter(after: number, limit = 100): MaloEventsPage {
+    return this.log.after(after, limit);
   }
 
   async networkCapture(input: { url_prefixes?: string[] }): Promise<MaloNetworkCaptureState> {
@@ -449,16 +467,7 @@ export class BrowserSession {
   }
 
   record(type: string, detail?: Record<string, unknown>): void {
-    this.eventSeq += 1;
-    this.events.push({
-      seq: this.eventSeq,
-      at: new Date().toISOString(),
-      type,
-      detail,
-    });
-    if (this.events.length > (this.options.eventLimit ?? MAX_EVENT_LOG)) {
-      this.events.splice(0, this.events.length - (this.options.eventLimit ?? MAX_EVENT_LOG));
-    }
+    this.log.record(type, detail);
   }
 
   async close(): Promise<void> {
@@ -484,6 +493,8 @@ export class BrowserSession {
     if (this.profile === null && this.options.partitionsDir !== undefined) {
       await removePartitionDir(this.options.partitionsDir, this.partitionName);
     }
+    // 事件落盘写完再返回：调用方拿到关闭结果时，审计文件是完整的
+    await this.log.flush();
   }
 
   private abortCreate(): void {

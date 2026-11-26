@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,8 +9,10 @@ import {
 
 // vi.mock 的工厂在模块求值时执行，早于测试文件顶层语句，所以假实现放在 vi.hoisted 里
 const fake = vi.hoisted(() => {
+  type PopupDetails = { url: string; disposition: string };
   function fakeWebContents() {
     const handlers = new Map<string, () => void>();
+    const openHandler = { current: null as null | ((details: PopupDetails) => { action: string }) };
     return {
       destroyed: false,
       session: {
@@ -20,7 +22,14 @@ const fake = vi.hoisted(() => {
         async clearCache() {},
         webRequest: { onErrorOccurred() {}, onCompleted() {} },
       },
-      setWindowOpenHandler() {},
+      loadURL: vi.fn(async () => undefined),
+      setWindowOpenHandler(handler: (details: PopupDetails) => { action: string }) {
+        openHandler.current = handler;
+      },
+      /** 页面调了 window.open */
+      openPopup(url: string) {
+        return openHandler.current?.({ url, disposition: "new-window" }) ?? { action: "allow" };
+      },
       on(event: string, handler: () => void) {
         handlers.set(event, handler);
       },
@@ -30,7 +39,6 @@ const fake = vi.hoisted(() => {
       isDestroyed() {
         return this.destroyed;
       },
-      async loadURL() {},
       getURL: () => "about:blank",
       getTitle: () => "",
       isLoading: () => false,
@@ -178,7 +186,7 @@ describe("BrowserSession 窗口状态", () => {
     stage.humanClose();
     expect(session.isClosed()).toBe(false);
     expect(session.summary().visible).toBe(false);
-    expect(session.eventsAfter(0).map((event) => event.type)).toContain("window.closed");
+    expect(session.eventsAfter(0).events.map((event) => event.type)).toContain("window.closed");
 
     const shown = await session.watch({ show: true });
     expect(shown).toMatchObject({ visible: true, window: "shown" });
@@ -236,7 +244,7 @@ describe("BrowserSession 页面被外部销毁", () => {
 
     expect(session.isPageLost()).toBe(true);
     expect(onPageLost).toHaveBeenCalledExactlyOnceWith(session);
-    expect(session.eventsAfter(0).map((event) => event.type)).toContain("page.destroyed");
+    expect(session.eventsAfter(0).events.map((event) => event.type)).toContain("page.destroyed");
     expect(session.summary()).toMatchObject({ session_id: session.id, url: "", title: "" });
     await expect(session.close()).resolves.toBeUndefined();
     expect(stage.closed).toBe(true);
@@ -250,5 +258,80 @@ describe("BrowserSession 页面被外部销毁", () => {
 
     expect(onPageLost).not.toHaveBeenCalled();
     expect(session.isPageLost()).toBe(false);
+  });
+});
+
+describe("BrowserSession 弹窗", () => {
+  it("默认拦下 window.open，记下目标地址；动作期间触发的弹窗随动作结果带回", async () => {
+    const session = await newSession();
+    const stage = stageOf(session);
+    const page = stage.view.webContents;
+
+    expect(page.openPopup("https://example.com/pop?x=1")).toEqual({ action: "deny" });
+    expect(session.lastPopup).toEqual({ seq: 1, url: "https://example.com/pop?x=1", adopted: false });
+    expect(session.eventsAfter(0).events.at(-1)).toMatchObject({
+      type: "navigation.popup_blocked",
+      detail: { url: "https://example.com/pop?x=1", disposition: "new-window" },
+    });
+    // 创建会话时只加载过 about:blank，弹窗地址没有被打开
+    expect(page.loadURL).toHaveBeenCalledExactlyOnceWith("about:blank");
+
+    // 动作执行期间页面弹窗：结果里带上 popup
+    const popupBefore = session.popupSeq;
+    driverOf().evaluate.mockImplementationOnce(async () => {
+      page.openPopup("https://example.com/pop?x=2");
+      return ASSERT_STATE;
+    });
+    const result = await session.act({ type: "sleep", ms: 0 });
+    expect(result.popup).toEqual({ seq: popupBefore + 1, url: "https://example.com/pop?x=2", adopted: false });
+    // 没有弹窗的动作不带这个字段
+    driverOf().evaluate.mockResolvedValue(ASSERT_STATE);
+    expect(await session.act({ type: "sleep", ms: 0 })).not.toHaveProperty("popup");
+    await session.close();
+  });
+
+  it("adopt 模式：把弹窗地址在当前页面打开并标记 adopted；非 http(s) 的仍然只拦不开", async () => {
+    const session = await newSession({ popup: "adopt" });
+    const page = stageOf(session).view.webContents;
+
+    expect(page.openPopup("https://example.com/next")).toEqual({ action: "deny" });
+    expect(session.lastPopup).toEqual({ seq: 1, url: "https://example.com/next", adopted: true });
+    expect(page.loadURL).toHaveBeenCalledWith("https://example.com/next");
+    expect(session.eventsAfter(0).events.at(-1)?.type).toBe("navigation.popup_adopted");
+
+    expect(page.openPopup("about:blank#blocked")).toEqual({ action: "deny" });
+    expect(session.lastPopup).toEqual({ seq: 2, url: "about:blank#blocked", adopted: false });
+    expect(page.loadURL.mock.calls.map(([url]) => url)).toEqual(["about:blank", "https://example.com/next"]);
+    await session.close();
+  });
+});
+
+describe("BrowserSession 事件留档", () => {
+  it("分页返回事件并带游标与断档数；事件同时落到 events.jsonl，关闭后文件完整", async () => {
+    const session = await newSession({ eventLimit: 4 });
+    expect(session.eventsLog.endsWith("events.jsonl")).toBe(true);
+    session.record("a");
+    session.record("b");
+    session.record("c");
+
+    const page = session.eventsAfter(0, 100);
+    // session.created + a/b/c 共 4 条，恰好占满缓冲
+    expect(page.events.map((event) => event.type)).toEqual(["session.created", "a", "b", "c"]);
+    expect(page.next_after).toBe(4);
+    expect(page.dropped).toBe(0);
+    expect(session.eventsAfter(0, 2)).toMatchObject({ next_after: 2, dropped: 0 });
+    session.record("d");
+    expect(session.eventsAfter(0, 100)).toMatchObject({ dropped: 1, next_after: 5 });
+
+    await session.close();
+    const written = (await readFile(session.eventsLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(written.map((event: { type: string }) => event.type)).toEqual([
+      "session.created",
+      "a",
+      "b",
+      "c",
+      "d",
+      "session.closed",
+    ]);
   });
 });

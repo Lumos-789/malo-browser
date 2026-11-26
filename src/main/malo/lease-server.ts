@@ -164,11 +164,15 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
       if (body.profile !== undefined && typeof body.profile !== "string") {
         throw new BadRequest("profile 必须是字符串");
       }
+      if (body.popup !== undefined && body.popup !== "deny" && body.popup !== "adopt") {
+        throw new BadRequest("popup 只能是 deny（拦下并回报目标地址）或 adopt（在当前页面打开）");
+      }
       const session = await options.manager.create({
         name: typeof body.name === "string" ? body.name : undefined,
         profile: body.profile,
         width,
         height,
+        popup: body.popup,
       });
       sendJson(res, 201, session);
       return;
@@ -314,7 +318,7 @@ export async function startLeaseServer(options: LeaseServerOptions): Promise<Lea
       if (op === "events" && req.method === "GET") {
         const after = readQueryInteger(url.searchParams.get("after"), "after", 0, 0, Number.MAX_SAFE_INTEGER);
         const limit = readQueryInteger(url.searchParams.get("limit"), "limit", 100, 1, 200);
-        sendJson(res, 200, { events: session.eventsAfter(after, limit) });
+        sendJson(res, 200, session.eventsAfter(after, limit));
         return;
       }
       if (op === "login" && req.method === "POST") {

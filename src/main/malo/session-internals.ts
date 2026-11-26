@@ -4,6 +4,7 @@ import type {
   MaloNavigationDiagnostics,
   MaloNetworkInfo,
   MaloObservation,
+  MaloPopupInfo,
   MaloWatchResult,
 } from "../../shared/malo";
 import type { ElectronPageDriver } from "../electron-page-driver";
@@ -25,6 +26,11 @@ export type BrowserSessionOptions = {
   onPageLost?: (session: BrowserSession) => void;
   /** daemon 是否以 --allow-focus 启动；只有那时 watch/login 的 focus=true 才被接受。 */
   allowFocus?: boolean;
+  /**
+   * 页面调 window.open 时怎么办。deny（默认）拦下并在动作结果里带回目标地址；
+   * adopt 把目标地址在同一个页面打开，适合「点开新窗口的链接」这类流程。
+   */
+  popup?: "deny" | "adopt";
 };
 
 /**
@@ -41,6 +47,9 @@ export type SessionInternals = {
   readonly consoleErrors: MaloNetworkInfo["console_errors"];
   navigationState: MaloNavigationDiagnostics | null;
   closed: boolean;
+  /** 最近一次被拦下的 window.open（按序号判断某个动作期间有没有触发）。 */
+  readonly popupSeq: number;
+  lastPopup: MaloPopupInfo | null;
   record(type: string, detail?: Record<string, unknown>): void;
   assertOpen(): void;
   touch(): void;

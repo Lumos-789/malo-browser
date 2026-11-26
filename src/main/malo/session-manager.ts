@@ -58,6 +58,8 @@ export class SessionManager {
     width?: number;
     height?: number;
     profile?: string;
+    /** 这个会话对 window.open 的处理方式，见 BrowserSessionOptions.popup。 */
+    popup?: "deny" | "adopt";
   }): Promise<MaloSessionCreated> {
     if (this.sessions.size + this.creating >= this.options.maxSessions) {
       throw new DemoError(
@@ -87,6 +89,7 @@ export class SessionManager {
         rootDir: this.options.rootDir,
         partitionsDir: this.options.partitionsDir,
         allowFocus: this.options.allowFocus === true,
+        popup: input.popup,
         onPageLost: (lost) => this.losePage(lost),
       });
       if (session.isPageLost()) {
@@ -109,6 +112,7 @@ export class SessionManager {
         session_token: session.token,
         downloads_dir: session.downloadsDir,
         artifacts_dir: session.artifactsDir,
+        events_log: session.eventsLog,
       };
     } finally {
       this.creating -= 1;

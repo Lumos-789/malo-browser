@@ -26,6 +26,8 @@ export type MaloSessionCreated = MaloSessionSummary & {
   session_token: string;
   downloads_dir: string;
   artifacts_dir: string;
+  /** 会话事件的落盘文件（JSONL，每行一条），会话关闭后仍在，供事后审计。 */
+  events_log: string;
 };
 
 export type MaloProfile = {
@@ -184,7 +186,19 @@ export type MaloSnapshot = {
     role: string;
     text: string;
     selector: string;
-    rect: { x: number; y: number; width: number; height: number };
+    /** x/y 是元素中心（可直接喂给 click/drag），left/top 是左上角；都是视口坐标。 */
+    rect: { x: number; y: number; left: number; top: number; width: number; height: number };
+  }>;
+  /** 靠 role 表达语义的自定义组件（tab、option、menuitem、switch 等）。 */
+  widgets: Array<{
+    role: string;
+    tag: string;
+    text: string;
+    selector: string;
+    disabled: boolean;
+    selected: boolean;
+    checked: boolean;
+    expanded: boolean;
   }>;
   frames: Array<{ url: string; name: string; title: string }>;
   dialogs: Array<{ text: string; selector: string }>;
@@ -354,6 +368,16 @@ export type MaloScrollAction = {
   type: "scroll";
   dx?: number;
   dy?: number;
+  /** 滚轮落点（视口坐标）；不给就打在视口中心。 */
+  x?: number;
+  y?: number;
+};
+
+export type MaloTypeAction = {
+  type: "type";
+  text: string;
+  /** 每个字符之间的间隔毫秒数，0-1000。 */
+  delay_ms?: number;
 };
 
 export type MaloHoverAction = {
@@ -405,6 +429,7 @@ export type MaloAction =
   | MaloUploadFileAction
   | MaloPressAction
   | MaloScrollAction
+  | MaloTypeAction
   | MaloHoverAction
   | MaloSelectAction
   | MaloFocusAction
@@ -413,10 +438,25 @@ export type MaloAction =
   | MaloWaitAction
   | MaloSleepAction;
 
+/** 这个动作触发的 window.open：被拦下时给出目标地址，adopt 模式下已在同一页面打开。 */
+export type MaloPopupInfo = {
+  url: string;
+  adopted: boolean;
+};
+
 export type MaloActionResult = {
   action: MaloAction["type"];
   detail: string;
   observation: MaloLightObservation;
+  popup?: MaloPopupInfo;
+};
+
+export type MaloEventsPage = {
+  events: MaloSessionEvent[];
+  /** 下一页的 after 游标。 */
+  next_after: number;
+  /** after 之后、最早一条留档之前丢掉的事件数（环形缓冲被覆盖）。 */
+  dropped: number;
 };
 
 export type MaloSessionEvent = {

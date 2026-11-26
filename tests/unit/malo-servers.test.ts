@@ -326,9 +326,11 @@ function fakeSession(id: string, token: string): FakeSession {
     navigate: vi.fn(async (url: string) => ({ ...summary, url, body_text: "" })),
     observe: vi.fn(async () => ({ ...summary, body_text: "", screenshot: { mime_type: "image/png", base64: "" } })),
     act: vi.fn(async (action: { type: string }) => ({ action: action.type, detail: "ok", observation: summary })),
-    eventsAfter: vi.fn((after: number): MaloSessionEvent[] => [
-      { seq: after + 1, at: "2026-11-03T00:00:00.000Z", type: "session.created" },
-    ]),
+    eventsAfter: vi.fn((after: number) => ({
+      events: [{ seq: after + 1, at: "2026-11-03T00:00:00.000Z", type: "session.created" } as MaloSessionEvent],
+      next_after: after + 1,
+      dropped: 0,
+    })),
     snapshot: vi.fn(async () => ({
       url: summary.url,
       title: "",
@@ -1112,5 +1114,28 @@ describe("lease server", () => {
     expect(missingToken.status).toBe(404);
     expect(JSON.parse(missingToken.body).error.code).toBe("E_SESSION_NOT_FOUND");
     expect(sessions.size).toBe(0);
+  });
+});
+
+describe("lease server session options", () => {
+  it("passes the popup mode to the manager and refuses anything but deny/adopt", async () => {
+    const harness = await startLeaseHarness();
+    const create = (body: Record<string, unknown>) =>
+      request(harness.server.port, {
+        method: "POST",
+        path: "/v1/sessions",
+        headers: leaseHeaders(),
+        body: JSON.stringify(body),
+      });
+
+    expect((await create({ popup: "adopt" })).status).toBe(201);
+    expect(vi.mocked(harness.manager.create).mock.calls[0][0]).toMatchObject({ popup: "adopt" });
+    expect((await create({})).status).toBe(201);
+    expect(vi.mocked(harness.manager.create).mock.calls[1][0]).toMatchObject({ popup: undefined });
+
+    const bad = await create({ popup: "allow" });
+    expect(bad.status).toBe(400);
+    expect(JSON.parse(bad.body).error.message).toContain("popup");
+    expect(vi.mocked(harness.manager.create)).toHaveBeenCalledTimes(2);
   });
 });

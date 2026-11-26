@@ -26,6 +26,6 @@ export interface PageDriver {
   uploadFiles(selector: string, files: string[]): Promise<void>;
   press(key: string, modifiers?: number): Promise<void>;
   selectAll(): Promise<void>;
-  scroll(delta: Point): Promise<void>;
+  scroll(delta: Point, origin?: Point): Promise<void>;
   screenshot(path: string): Promise<void>;
 }
